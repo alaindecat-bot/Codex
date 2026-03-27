@@ -119,6 +119,46 @@ Scaffolder le projet Python avec :
 - dépendances minimales
 - premier parseur du `.txt`
 
+## État actuel
+
+Le projet contient maintenant un premier convertisseur Python capable de :
+
+- extraire le zip WhatsApp
+- parser `_chat.txt`
+- mapper `Alain` vers `A`
+- mapper l'autre participant vers une initiale choisie, par exemple `M`
+- intégrer les photos dans un document `.docx`
+- rendre les messages contenant seulement une URL sur une ligne dédiée
+
+## Exécution
+
+Créer l'environnement virtuel :
+
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+python3 -m venv .venv
+.venv/bin/pip install python-docx
+```
+
+Lancer une conversion :
+
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+PYTHONPATH=src .venv/bin/python3 -m whatsapp_zip_to_docx.main \
+  "/chemin/vers/WhatsApp Chat.zip" \
+  "/chemin/vers/output.docx" \
+  --self-name Alain \
+  --other-initial M
+```
+
+Optionnel :
+
+```bash
+--inspect-urls
+```
+
+Cette option tente de suivre les URLs et d'afficher leur type dans le terminal.
+
 ## Questions encore ouvertes
 
 - quel format exact de document Word voulez-vous en sortie ?

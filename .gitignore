@@ -6,3 +6,5 @@ dist/
 build/
 *.docx
 tmp/
+secrets/
+analysis/
