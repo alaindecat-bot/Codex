@@ -1,146 +1,78 @@
 # WhatsApp Zip to Word
 
-Application macOS pour convertir un export WhatsApp (`.zip`) en document Word (`.docx`).
+Convertisseur Python pour transformer un export WhatsApp (`.zip`) en document Word (`.docx`).
 
-## Objectif
+## Ce que le projet fait aujourd'hui
 
-Le `.zip` contient :
+Le projet sait déjà :
 
-- un fichier `.txt` avec l'historique du chat
-- des pièces jointes, surtout des photos
+- extraire un export WhatsApp `.zip`
+- parser `_chat.txt`
+- générer un document Word structuré par mois et par jour
+- afficher les messages avec heure au format `[hh:mm]`
+- mapper les participants vers des abréviations, par exemple `Alain -> A`, `murithul -> M`
+- intégrer les photos dans le document
+- rendre la première page des PDF comme image
+- enrichir certains liens publics :
+  - `Spotify`
+  - `Facebook`
+  - pages web classiques avec métadonnées publiques
+- intégrer des aperçus cliquables dans le document Word
+- envoyer les vidéos sur Google Drive et rendre une vignette cliquable dans le document
+- proposer un mode interactif de lancement pour choisir certaines options avant génération
 
-L'application devra :
+## Rendu Word actuel
 
-1. ouvrir et extraire le `.zip`
-2. parser le fichier `.txt`
-3. détecter les URLs dans les messages
-4. vérifier la cible de chaque URL
-5. appliquer des actions selon le type de contenu trouvé
-6. générer un document Word structuré
+Le document généré peut contenir :
 
-Exemple de règles :
+- titres de mois
+- titres de jours
+- messages texte
+- poèmes détectés heuristiquement
+- images jointes
+- PDF rendus comme image
+- blocs enrichis pour `Spotify`, `Facebook` et certains liens web
+- vignettes vidéo cliquables vers Google Drive si l'option est activée
 
-- `spotify.com` -> ajouter un bloc "Lien Spotify"
-- image distante -> ajouter un bloc "Image liée"
-- page web classique -> ajouter le titre et l'URL finale
-
-## Proposition technique
-
-Pour un premier projet, le chemin le plus simple est :
-
-- moteur en `Python`
-- interface initiale en ligne de commande
-- application Mac plus tard si besoin
-
-Pourquoi :
-
-- plus simple pour parser un zip, du texte et générer un `.docx`
-- bon support des bibliothèques
-- apprentissage GitHub plus facile sur un projet petit et lisible
-
-## Architecture initiale
+## Structure du projet
 
 - `src/whatsapp_zip_to_docx/zip_reader.py`
   - extraction du zip
-- `src/whatsapp_zip_to_docx/chat_parser.py`
-  - lecture du `.txt`
-- `src/whatsapp_zip_to_docx/url_inspector.py`
-  - résolution des URLs et classification
-- `src/whatsapp_zip_to_docx/rules.py`
-  - règles d'action selon le type d'URL
+- `src/whatsapp_zip_to_docx/parser.py`
+  - parsing du chat WhatsApp
+- `src/whatsapp_zip_to_docx/url_tools.py`
+  - inspection et enrichissement des URLs
 - `src/whatsapp_zip_to_docx/docx_writer.py`
-  - génération du fichier Word
+  - génération du document Word
+- `src/whatsapp_zip_to_docx/google_drive.py`
+  - authentification Google Drive et upload de fichiers
+- `src/whatsapp_zip_to_docx/interactive.py`
+  - dialogue interactif de lancement
+- `src/whatsapp_zip_to_docx/reply_analysis.py`
+  - heuristiques de détection des réponses
 - `src/whatsapp_zip_to_docx/main.py`
-  - point d'entrée
+  - point d'entrée CLI
+- `scripts/export_reply_candidates.py`
+  - export Markdown des candidats `question/réponse`
 
-## Roadmap courte
-
-### Étape 1
-
-Créer un outil qui :
-
-- prend un `.zip` en entrée
-- extrait le `.txt`
-- liste les pièces jointes
-- extrait les URLs du `.txt`
-
-### Étape 2
-
-Ajouter l'inspection des URLs :
-
-- suivre les redirections
-- récupérer le type de contenu
-- classifier les liens
-
-### Étape 3
-
-Générer un `.docx` :
-
-- messages textuels
-- sections médias
-- résumé des URLs détectées
-
-### Étape 4
-
-Ajouter une interface Mac.
-
-## GitHub : apprentissage recommandé
-
-Commencer avec ce flux simple :
-
-1. créer un dépôt local
-2. faire un premier commit
-3. publier sur GitHub
-4. travailler par petites branches
-5. ouvrir des pull requests, même si vous êtes seul
-
-Commandes de base :
-
-```bash
-git init
-git add .
-git commit -m "Initial project scaffold"
-```
-
-Puis après création du repo GitHub :
-
-```bash
-git remote add origin <URL_DU_REPO>
-git branch -M main
-git push -u origin main
-```
-
-## Prochaine étape recommandée
-
-Scaffolder le projet Python avec :
-
-- structure `src/`
-- environnement virtuel
-- dépendances minimales
-- premier parseur du `.txt`
-
-## État actuel
-
-Le projet contient maintenant un premier convertisseur Python capable de :
-
-- extraire le zip WhatsApp
-- parser `_chat.txt`
-- mapper `Alain` vers `A`
-- mapper l'autre participant vers une initiale choisie, par exemple `M`
-- intégrer les photos dans un document `.docx`
-- rendre les messages contenant seulement une URL sur une ligne dédiée
-
-## Exécution
-
-Créer l'environnement virtuel :
+## Installation
 
 ```bash
 cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
 python3 -m venv .venv
-.venv/bin/pip install python-docx
+.venv/bin/pip install -e .
 ```
 
-Lancer une conversion :
+Si vous n'utilisez pas l'installation editable :
+
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+.venv/bin/pip install python-docx google-api-python-client google-auth-oauthlib
+```
+
+## Utilisation
+
+Conversion simple :
 
 ```bash
 cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
@@ -151,17 +83,90 @@ PYTHONPATH=src .venv/bin/python3 -m whatsapp_zip_to_docx.main \
   --other-initial M
 ```
 
-Optionnel :
+Avec enrichissement d'URLs :
 
 ```bash
---inspect-urls
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+PYTHONPATH=src .venv/bin/python3 -m whatsapp_zip_to_docx.main \
+  "/chemin/vers/WhatsApp Chat.zip" \
+  "/chemin/vers/output.docx" \
+  --self-name Alain \
+  --other-initial M \
+  --enrich-urls
 ```
 
-Cette option tente de suivre les URLs et d'afficher leur type dans le terminal.
+Avec dialogue interactif :
 
-## Questions encore ouvertes
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+PYTHONPATH=src .venv/bin/python3 -m whatsapp_zip_to_docx.main \
+  "/chemin/vers/WhatsApp Chat.zip" \
+  "/chemin/vers/output.docx" \
+  --interactive
+```
 
-- quel format exact de document Word voulez-vous en sortie ?
-- faut-il intégrer les photos dans le `.docx` ou juste les référencer ?
-- faut-il traiter aussi les audios, vidéos et PDF ?
-- quelles actions voulez-vous exactement pour Spotify et les autres URLs ?
+Avec upload des vidéos vers Google Drive :
+
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+PYTHONPATH=src .venv/bin/python3 -m whatsapp_zip_to_docx.main \
+  "/chemin/vers/WhatsApp Chat.zip" \
+  "/chemin/vers/output.docx" \
+  --self-name Alain \
+  --other-initial M \
+  --enrich-urls \
+  --upload-videos-to-drive
+```
+
+## Google Drive
+
+Le projet peut utiliser un client OAuth Google de type `Desktop app`.
+
+Fichiers locaux attendus :
+
+- `secrets/client_secret_....json`
+- `secrets/google_drive_token.json`
+
+Tester l'authentification :
+
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+PYTHONPATH=src .venv/bin/python3 -m whatsapp_zip_to_docx.main dummy.zip dummy.docx --test-drive-auth
+```
+
+Tester un upload de fichier :
+
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+PYTHONPATH=src .venv/bin/python3 -m whatsapp_zip_to_docx.main dummy.zip dummy.docx --upload-to-drive "/chemin/vers/un/fichier"
+```
+
+## Analyse des réponses
+
+Le script suivant exporte deux listes de candidats `question/réponse` :
+
+```bash
+cd /Users/alaindecat/Codex/whatsapp-zip-to-docx
+PYTHONPATH=src .venv/bin/python3 scripts/export_reply_candidates.py \
+  "/chemin/vers/WhatsApp Chat.zip" \
+  "/chemin/vers/dossier_sortie"
+```
+
+Sorties générées :
+
+- `reply_candidates_simple.md`
+- `reply_candidates_semantic.md`
+
+## État GitHub
+
+Le dépôt GitHub est publié ici :
+
+- [alaindecat-bot/Codex](https://github.com/alaindecat-bot/Codex)
+
+## Prochaines améliorations
+
+- intégrer le marquage des réponses détectées directement dans le document Word
+- affiner encore le dialogue interactif de lancement
+- améliorer la présentation visuelle des vidéos dans Word
+- traiter éventuellement les audios
+- nettoyer l'environnement Python pour réduire les warnings techniques
