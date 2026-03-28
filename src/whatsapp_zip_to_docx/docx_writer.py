@@ -173,6 +173,17 @@ def _append_url_metadata(document: Document, info: UrlInfo | None) -> bool:
     if info is None:
         return False
 
+    if info.kind == "unreachable":
+        _add_url_block_heading(document, info.source_label, hyperlink=info.final_url or info.original_url)
+        if info.error:
+            _add_url_detail_line(document, f"Erreur d'acces: {info.error}")
+        return True
+
+    if info.kind == "meeting":
+        _add_url_block_heading(document, info.source_label, hyperlink=info.final_url or info.original_url)
+        _add_url_detail_line(document, "Lien de reunion")
+        return True
+
     if info.kind == "spotify":
         details = []
         title = info.og_title or info.page_title
@@ -211,7 +222,7 @@ def _append_url_metadata(document: Document, info: UrlInfo | None) -> bool:
         return bool(details)
 
     if info.kind == "webpage":
-        heading = info.web_source or "Lien"
+        heading = info.web_source or info.source_label or "Lien"
         _add_url_block_heading(document, heading, hyperlink=info.final_url)
         details = []
         if info.webpage_content_type:
@@ -481,6 +492,9 @@ def _render_url(
         _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
         return rendered or bool(info.og_image)
 
+    if info.kind == "meeting":
+        return _append_url_metadata(document, info)
+
     if info.kind == "webpage" and info.og_image:
         rendered = _append_url_metadata(document, info)
         _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
@@ -493,7 +507,7 @@ def _render_url(
         return rendered
 
     rendered = _append_url_metadata(document, info)
-    if render_fallback_quote:
+    if render_fallback_quote and info.kind != "unreachable":
         _add_quote_paragraph(document, url, hyperlink=url)
     return rendered
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from .docx_writer import write_docx
 from .engine import EngineRequest, EngineResult, EngineWarning
 from .google_drive import DriveConfig, ensure_drive_service, ensure_folder, folder_web_link, upload_file
-from .interactive import build_summary_lines
+from .interactive import build_summary_lines_with_initials
 from .parser import Message, parse_chat
 from .reply_analysis import semantic_scoring_candidates
 from .url_tools import UrlInfo, inspect_url
@@ -44,7 +44,7 @@ def generate_document(request: EngineRequest, drive_config: DriveConfig | None =
         logs.append(f"Read chat text using {chat_encoding}.")
 
         summary_lines = (
-            build_summary_lines(messages, datetime.now())
+            build_summary_lines_with_initials(messages, datetime.now(), request.initials_by_author)
             if request.profile.include_summary
             else None
         )

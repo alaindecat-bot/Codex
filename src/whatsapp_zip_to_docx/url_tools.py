@@ -13,6 +13,12 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 TITLE_RE = re.compile(r"<title>(?P<title>.*?)</title>", re.IGNORECASE | re.DOTALL)
+LOW_INFORMATION_DOMAINS = (
+    "teams.microsoft.com",
+    "teams.live.com",
+    "zoom.us",
+    "meet.google.com",
+)
 
 
 @dataclass
@@ -40,6 +46,8 @@ class UrlInfo:
             return "spotify"
         if "facebook.com" in domain or "fb.watch" in domain:
             return "facebook"
+        if any(host in domain for host in LOW_INFORMATION_DOMAINS):
+            return "meeting"
         if content_type.startswith("image/"):
             return "image"
         if content_type.startswith("video/"):
@@ -49,6 +57,20 @@ class UrlInfo:
         if self.error:
             return "unreachable"
         return "webpage"
+
+    @property
+    def source_label(self) -> str:
+        if self.og_site_name:
+            return self.og_site_name
+        if self.kind == "meeting":
+            domain = self.domain.lower()
+            if "teams" in domain:
+                return "Teams"
+            if "zoom" in domain:
+                return "Zoom"
+            if "meet.google" in domain:
+                return "Google Meet"
+        return _humanize_domain(self.domain)
 
     @property
     def lyrics_searchable(self) -> Optional[bool]:

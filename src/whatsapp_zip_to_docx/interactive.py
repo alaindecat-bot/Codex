@@ -84,6 +84,25 @@ def build_summary_lines(messages: list[Message], generated_at: datetime) -> list
     ]
 
 
+def build_summary_lines_with_initials(
+    messages: list[Message],
+    generated_at: datetime,
+    initials_by_author: dict[str, str],
+) -> list[str]:
+    authors = list(dict.fromkeys(message.author for message in messages))
+    start = messages[0].timestamp
+    end = messages[-1].timestamp
+    participants = ", ".join(
+        f"{author} ({initials_by_author.get(author, author[:1].upper())})"
+        for author in authors
+    )
+    return [
+        f"Participants: {participants}",
+        f"Periode: du {start:%d/%m/%Y} au {end:%d/%m/%Y}",
+        f"Genere le: {generated_at:%d/%m/%Y}",
+    ]
+
+
 def _prompt_author_initials(authors: list[str]) -> dict[str, str]:
     print()
     print("Participants")
