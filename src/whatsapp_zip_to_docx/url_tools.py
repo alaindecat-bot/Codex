@@ -77,6 +77,11 @@ class UrlInfo:
     def facebook_content_type(self) -> Optional[str]:
         if self.kind != "facebook":
             return None
+        path = urlparse(self.final_url or self.original_url).path.lower()
+        if "/posts/" in path:
+            return "post"
+        if "/videos/" in path or "fb.watch" in self.domain.lower():
+            return "video"
         og_type = (self.og_type or "").lower()
         if "video" in og_type:
             return "video"
@@ -259,11 +264,19 @@ def _fetch_html_with_curl(url: str) -> Optional[str]:
             ["curl", "-L", "--silent", url],
             capture_output=True,
             check=True,
-            text=True,
         )
     except (OSError, subprocess.CalledProcessError):
         return None
-    return completed.stdout[:300_000]
+    return _decode_html_payload(completed.stdout[:300_000])
+
+
+def _decode_html_payload(payload: bytes) -> str:
+    for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return payload.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return payload.decode("utf-8", errors="replace")
 
 
 def _request_headers() -> dict[str, str]:

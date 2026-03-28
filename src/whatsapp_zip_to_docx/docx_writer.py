@@ -15,7 +15,10 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
 from .parser import Message
+from .reply_analysis import ReplyCandidate
 from .url_tools import UrlInfo, download_og_image
+
+INLINE_URL_RE = re.compile(r"https?://\S+")
 
 FRENCH_MONTHS = {
     1: "Janvier",
@@ -50,11 +53,15 @@ def write_docx(
     url_infos: dict[str, UrlInfo] | None = None,
     summary_lines: list[str] | None = None,
     attachment_links: dict[Path, str] | None = None,
+    reply_links: dict[int, ReplyCandidate] | None = None,
+    video_mode: str = "none",
+    video_folder_link: str | None = None,
 ) -> None:
     document = Document()
     _configure_document_styles(document)
     url_infos = url_infos or {}
     attachment_links = attachment_links or {}
+    reply_links = reply_links or {}
 
     if summary_lines:
         _add_document_summary(document, summary_lines)
@@ -81,38 +88,61 @@ def write_docx(
             initial = initials_by_author.get(message.author, message.author[:1].upper())
             header = f"[{message.timestamp:%H:%M}] {initial}: "
             next_is_new_day = next_message is None or next_message.timestamp.date() != message_day
+            reply_candidate = reply_links.get(index)
 
             if message.attachment and _is_visual_attachment(message.attachment.path):
                 header_paragraph = _add_plain_paragraph(document, header)
                 header_paragraph.paragraph_format.keep_with_next = True
+                if reply_candidate is not None:
+                    _add_reply_marker(document, messages, initials_by_author, reply_candidate)
                 prepared = _prepare_visual_attachment(message.attachment.path, preview_dir)
                 if prepared is not None:
-                    _add_centered_picture(document, prepared)
+                    _add_centered_picture(
+                        document,
+                        prepared,
+                        height_cm=_attachment_height_cm(message.attachment.path),
+                    )
                 else:
                     _add_plain_paragraph(document, message.attachment.filename)
             elif message.attachment and _is_supported_video(message.attachment.path):
                 header_paragraph = _add_plain_paragraph(document, header)
                 header_paragraph.paragraph_format.keep_with_next = True
+                if reply_candidate is not None:
+                    _add_reply_marker(document, messages, initials_by_author, reply_candidate)
                 preview = _render_video_preview(message.attachment.path, preview_dir)
                 video_link = attachment_links.get(message.attachment.path)
+                fallback_video_link = video_folder_link if video_mode == "drive" else None
+                duration_label = _read_video_duration_label(message.attachment.path)
                 if preview is not None:
                     _add_centered_picture(
                         document,
                         preview,
-                        hyperlink=video_link,
-                        blue_border=bool(video_link),
+                        hyperlink=video_link or fallback_video_link,
+                        blue_border=bool(video_link or fallback_video_link),
                     )
-                    if video_link:
-                        _add_attachment_caption(document, "Video - Google Drive")
-                    else:
-                        _add_attachment_caption(document, "Video")
                 else:
                     _add_plain_paragraph(document, message.attachment.filename)
             elif message.attachment:
                 text = message.attachment.filename
-                _add_plain_paragraph(document, f"{header}{text}")
+                if reply_candidate is not None:
+                    header_paragraph = _add_plain_paragraph(document, header)
+                    header_paragraph.paragraph_format.keep_with_next = True
+                    _add_reply_marker(document, messages, initials_by_author, reply_candidate)
+                    _add_plain_paragraph(document, text)
+                else:
+                    _add_plain_paragraph(document, f"{header}{text}")
             else:
-                _write_message_body(document, header, message.body, url_infos, next_is_new_day, preview_dir)
+                _write_message_body(
+                    document,
+                    header,
+                    message.body,
+                    url_infos,
+                    next_is_new_day,
+                    preview_dir,
+                    messages=messages,
+                    initials_by_author=initials_by_author,
+                    reply_candidate=reply_candidate,
+                )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(output_path))
@@ -206,10 +236,13 @@ def _write_message_body(
     url_infos: dict[str, UrlInfo],
     next_is_new_day: bool,
     preview_dir: Path,
+    messages: list[Message],
+    initials_by_author: dict[str, str],
+    reply_candidate: ReplyCandidate | None = None,
 ) -> None:
     lines = body.splitlines() or [body]
     if _is_poem(body):
-        _write_poem_message(document, header.rstrip(), body)
+        _write_poem_message(document, header.rstrip(), body, messages, initials_by_author, reply_candidate)
         return
 
     wrote_header = False
@@ -217,44 +250,41 @@ def _write_message_body(
 
     for line in lines:
         stripped = line.strip()
+        line_urls = INLINE_URL_RE.findall(line)
         if not wrote_header:
-            if stripped.startswith("http://") or stripped.startswith("https://"):
-                info = url_infos.get(stripped)
-                if info is not None and info.kind == "spotify":
-                    _add_plain_paragraph(document, header.rstrip())
-                    wrote_header = True
-                elif info is not None and info.kind == "facebook":
-                    _add_plain_paragraph(document, header.rstrip())
-                    wrote_header = True
-                elif info is not None and info.kind == "webpage" and info.og_image:
+            if reply_candidate is not None:
+                header_paragraph = _add_plain_paragraph(document, header.rstrip())
+                header_paragraph.paragraph_format.keep_with_next = True
+                _add_reply_marker(document, messages, initials_by_author, reply_candidate)
+                wrote_header = True
+                if not line_urls:
+                    _add_plain_paragraph(document, line)
+                    continue
+            if line_urls:
+                if len(line_urls) == 1 and stripped == line_urls[0]:
                     _add_plain_paragraph(document, header.rstrip())
                     wrote_header = True
                 else:
                     _add_plain_paragraph(document, header.rstrip())
+                    _add_text_with_hyperlinks(document, line)
                     wrote_header = True
             else:
                 _add_plain_paragraph(document, f"{header}{line}")
                 wrote_header = True
                 continue
 
-        if stripped.startswith("http://") or stripped.startswith("https://"):
-            info = url_infos.get(stripped)
-            if info is None:
-                _add_quote_paragraph(document, stripped, hyperlink=stripped)
-            elif info.kind == "spotify":
-                appended_metadata = _append_url_metadata(document, info) or appended_metadata
-            elif info.kind == "facebook":
-                appended_metadata = _append_url_metadata(document, info) or appended_metadata
-                _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
-            elif info.kind == "webpage" and info.og_image:
-                appended_metadata = _append_url_metadata(document, info) or appended_metadata
-                _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
+        if line_urls:
+            if len(line_urls) == 1 and stripped == line_urls[0]:
+                appended_metadata = _render_url(document, line_urls[0], url_infos, preview_dir) or appended_metadata
             else:
-                if info is not None and info.kind == "webpage":
-                    appended_metadata = _append_url_metadata(document, info) or appended_metadata
-                _add_quote_paragraph(document, stripped, hyperlink=stripped)
-            if info is not None and info.kind not in {"spotify", "facebook"} and info.kind != "webpage":
-                appended_metadata = _append_url_metadata(document, info) or appended_metadata
+                for url in line_urls:
+                    appended_metadata = _render_url(
+                        document,
+                        url,
+                        url_infos,
+                        preview_dir,
+                        render_fallback_quote=False,
+                    ) or appended_metadata
         elif stripped:
             _add_plain_paragraph(document, line)
         else:
@@ -348,6 +378,44 @@ def _add_plain_paragraph(document: Document, text: str):
     return paragraph
 
 
+def _add_text_with_hyperlinks(document: Document, text: str):
+    paragraph = document.add_paragraph()
+    last_end = 0
+    for match in INLINE_URL_RE.finditer(text):
+        prefix = text[last_end:match.start()]
+        if prefix:
+            run = paragraph.add_run(prefix)
+            _apply_run_format(run)
+        url = match.group(0)
+        _add_hyperlink(paragraph, url, url)
+        last_end = match.end()
+    suffix = text[last_end:]
+    if suffix:
+        run = paragraph.add_run(suffix)
+        _apply_run_format(run)
+    return paragraph
+
+
+def _add_reply_marker(
+    document: Document,
+    messages: list[Message],
+    initials_by_author: dict[str, str],
+    candidate: ReplyCandidate,
+) -> None:
+    if candidate.intervening_count == 0:
+        return
+    prompt = messages[candidate.prompt_index]
+    initial = initials_by_author.get(prompt.author, prompt.author[:1].upper())
+    excerpt = _truncate_reply_excerpt(_single_line(prompt.body))
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.left_indent = Inches(0.2)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(2)
+    paragraph.paragraph_format.keep_with_next = True
+    run = paragraph.add_run(f"↳ Reponse a [{prompt.timestamp:%H:%M}] {initial}: {excerpt}")
+    _apply_run_format(run, italic=True, size=Pt(9), color=RGBColor(0x66, 0x66, 0x66))
+
+
 def _add_quote_paragraph(document: Document, text: str, hyperlink: str | None = None) -> None:
     paragraph = document.add_paragraph(style="Intense Quote")
     if hyperlink:
@@ -357,13 +425,18 @@ def _add_quote_paragraph(document: Document, text: str, hyperlink: str | None = 
         _apply_run_format(run)
 
 
-def _add_attachment_caption(document: Document, text: str) -> None:
+def _add_attachment_caption(document: Document, text: str, subtle: bool = False) -> None:
     paragraph = document.add_paragraph()
     paragraph.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-    paragraph.paragraph_format.space_before = Pt(2)
-    paragraph.paragraph_format.space_after = Pt(6)
+    paragraph.paragraph_format.space_before = Pt(2 if not subtle else 0)
+    paragraph.paragraph_format.space_after = Pt(6 if not subtle else 4)
     run = paragraph.add_run(text)
-    _apply_run_format(run, italic=True, size=Pt(9))
+    _apply_run_format(
+        run,
+        italic=True,
+        size=Pt(9 if not subtle else 8.5),
+        color=RGBColor(0x66, 0x66, 0x66) if subtle else None,
+    )
 
 
 def _append_web_preview(
@@ -379,6 +452,50 @@ def _append_web_preview(
     prepared = _prepare_image_for_render(preview_path, workspace=preview_dir)
     height_cm = 11 if info.kind == "facebook" and _is_portrait_image(prepared) else 7
     _add_centered_picture(document, prepared, hyperlink=hyperlink, blue_border=blue_border, height_cm=height_cm)
+
+
+def _attachment_height_cm(attachment_path: Path) -> int:
+    if _is_renderable_pdf(attachment_path):
+        return 14
+    return 7
+
+
+def _render_url(
+    document: Document,
+    url: str,
+    url_infos: dict[str, UrlInfo],
+    preview_dir: Path,
+    render_fallback_quote: bool = True,
+) -> bool:
+    info = url_infos.get(url)
+    if info is None:
+        if render_fallback_quote:
+            _add_quote_paragraph(document, url, hyperlink=url)
+        return False
+
+    if info.kind == "spotify":
+        return _append_url_metadata(document, info)
+
+    if info.kind == "facebook":
+        rendered = _append_url_metadata(document, info)
+        _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
+        return rendered or bool(info.og_image)
+
+    if info.kind == "webpage" and info.og_image:
+        rendered = _append_url_metadata(document, info)
+        _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
+        return rendered or True
+
+    if info.kind == "webpage":
+        rendered = _append_url_metadata(document, info)
+        if render_fallback_quote:
+            _add_quote_paragraph(document, url, hyperlink=url)
+        return rendered
+
+    rendered = _append_url_metadata(document, info)
+    if render_fallback_quote:
+        _add_quote_paragraph(document, url, hyperlink=url)
+    return rendered
 
 
 def _add_centered_picture(
@@ -421,8 +538,17 @@ def _is_poem(body: str) -> bool:
     return average_length <= 55 and short_line_count >= max(3, len(non_empty) - 1)
 
 
-def _write_poem_message(document: Document, header: str, body: str) -> None:
+def _write_poem_message(
+    document: Document,
+    header: str,
+    body: str,
+    messages: list[Message],
+    initials_by_author: dict[str, str],
+    reply_candidate: ReplyCandidate | None = None,
+) -> None:
     _add_plain_paragraph(document, header)
+    if reply_candidate is not None:
+        _add_reply_marker(document, messages, initials_by_author, reply_candidate)
     stanzas = []
     current: list[str] = []
     for raw_line in body.splitlines():
@@ -491,6 +617,31 @@ def _render_video_preview(video_path: Path, workspace: Path) -> Path | None:
     if preview is None:
         return None
     return _prepare_image_for_render(preview, workspace=workspace)
+
+
+def _read_video_duration_label(video_path: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["mdls", "-name", "kMDItemDurationSeconds", str(video_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    for line in result.stdout.splitlines():
+        if "kMDItemDurationSeconds" not in line or "=" not in line:
+            continue
+        raw = line.split("=", 1)[1].strip()
+        if raw == "(null)":
+            return None
+        try:
+            total_seconds = int(round(float(raw)))
+        except ValueError:
+            return None
+        minutes, seconds = divmod(total_seconds, 60)
+        return f"{minutes}:{seconds:02d}"
+    return None
 
 
 def _run_quicklook_thumbnail(source_path: Path, output_dir: Path) -> Path | None:
@@ -669,3 +820,19 @@ def _apply_blue_paragraph_border(paragraph) -> None:
         element.set(qn("w:color"), "4F81BD")
         p_bdr.append(element)
     p_pr.append(p_bdr)
+
+
+def _single_line(text: str) -> str:
+    return " ".join(part.strip() for part in text.splitlines() if part.strip())
+
+
+def _truncate_reply_excerpt(text: str, max_length: int = 70) -> str:
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def _build_video_caption(label: str, duration: str | None) -> str:
+    if duration:
+        return f"{label} - {duration}"
+    return label

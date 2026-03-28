@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
 
@@ -31,20 +33,39 @@ def upload_file(
     config: DriveConfig,
     mime_type: Optional[str] = None,
     folder_id: Optional[str] = None,
+    service=None,
 ) -> str:
-    service = ensure_drive_service(config)
-    target_folder_id = folder_id or ensure_folder(service, config.folder_name)
+    drive_service = service or ensure_drive_service(config)
+    target_folder_id = folder_id or ensure_folder(drive_service, config.folder_name)
     metadata = {
         "name": file_path.name,
         "parents": [target_folder_id],
     }
     media = MediaFileUpload(str(file_path), mimetype=mime_type, resumable=False)
-    created = (
-        service.files()
-        .create(body=metadata, media_body=media, fields="id, webViewLink")
-        .execute()
-    )
-    return created["webViewLink"]
+    last_error: HttpError | None = None
+    for attempt in range(3):
+        try:
+            created = (
+                drive_service.files()
+                .create(body=metadata, media_body=media, fields="id, webViewLink")
+                .execute()
+            )
+            return created["webViewLink"]
+        except HttpError as error:
+            last_error = error
+            status = getattr(error.resp, "status", None)
+            if status not in {500, 502, 503, 504}:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Unexpected upload failure without HttpError")
+
+
+def folder_web_link(config: DriveConfig, folder_id: Optional[str] = None, service=None) -> str:
+    drive_service = service or ensure_drive_service(config)
+    resolved_folder_id = folder_id or ensure_folder(drive_service, config.folder_name)
+    return f"https://drive.google.com/drive/folders/{resolved_folder_id}"
 
 
 def ensure_folder(service, folder_name: str) -> str:

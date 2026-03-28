@@ -44,6 +44,7 @@ class ReplyCandidate:
     method: str
     rationale: str
     overlap: float = 0.0
+    intervening_count: int = 0
 
 
 def simple_local_candidates(messages: list[Message]) -> list[ReplyCandidate]:
@@ -75,6 +76,7 @@ def simple_local_candidates(messages: list[Message]) -> list[ReplyCandidate]:
                     method="heuristique_locale_simple",
                     rationale="Dernier message textuel precedent de l'autre personne.",
                     overlap=_token_overlap(prompt.body, message.body),
+                    intervening_count=_intervening_textual_count(messages, candidate_index, index),
                 )
             )
             break
@@ -116,6 +118,7 @@ def semantic_scoring_candidates(messages: list[Message]) -> list[ReplyCandidate]
                     method="scoring_semantique",
                     rationale=rationale,
                     overlap=overlap,
+                    intervening_count=_intervening_textual_count(messages, candidate_index, index),
                 )
         if best is not None:
             links.append(best)
@@ -137,6 +140,7 @@ def render_candidates_markdown(
         lines.append(f"- Message source: {_single_line(prompt.body)}")
         lines.append(f"- Score: {candidate.score:.2f}")
         lines.append(f"- Chevauchement lexical: {candidate.overlap:.2f}")
+        lines.append(f"- Messages intercalaires: {candidate.intervening_count}")
         lines.append(f"- Raison: {candidate.rationale}")
         lines.append("")
     return "\n".join(lines)

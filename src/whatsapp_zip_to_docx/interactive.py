@@ -5,14 +5,15 @@ from datetime import datetime
 from pathlib import Path
 
 from .parser import Message
+from .profile_store import load_profiles, upsert_profile
+from .profiles import UserProfile, default_profile
 
 
 @dataclass
 class LaunchConfig:
     output_docx: Path
     initials_by_author: dict[str, str]
-    include_summary: bool
-    spotify_mode: str
+    profile: UserProfile
 
 
 def prompt_launch_config(
@@ -20,6 +21,8 @@ def prompt_launch_config(
     default_output: Path,
     messages: list[Message],
 ) -> LaunchConfig:
+    stored_profiles = load_profiles()
+    profile = _prompt_profile_selection(stored_profiles)
     authors = list(dict.fromkeys(message.author for message in messages))
     print()
     print("Configuration du document")
@@ -29,25 +32,44 @@ def prompt_launch_config(
         default_output,
     )
     initials_by_author = _prompt_author_initials(authors)
-    include_summary = _prompt_yes_no("Inserer un resume en tete du document", default=True)
+    include_summary = _prompt_yes_no("Inserer un resume en tete du document", default=profile.include_summary)
     spotify_mode = _prompt_choice(
         "Traitement des liens Spotify",
-        default="simple",
+        default=profile.spotify_mode,
         options={
             "simple": "Afficher seulement les metadonnees et 'Paroles trouvables: oui/non'",
-            "poeme": "Reserver une place pour une integration ulterieure des paroles en format poeme",
+            "poeme": "Utiliser le mode poeme par defaut quand le profil l'autorise",
+        },
+    )
+    video_mode = _prompt_choice(
+        "Traitement des videos",
+        default=profile.video_mode,
+        options={
+            "drive": "Vignette cliquable avec upload automatique sur Google Drive",
+            "local": "Vignette seule dans le document, sans lien cloud",
+            "none": "Ne pas traiter specialement les videos",
         },
     )
     print()
     print(f"Fichier source: {input_zip}")
     print(f"Sortie: {output_docx}")
+    selected_profile = UserProfile(
+        name=profile.name,
+        include_summary=include_summary,
+        spotify_mode=spotify_mode,
+        video_mode=video_mode,
+        enrich_public_urls=profile.enrich_public_urls,
+        network=profile.network,
+    )
+    print(f"Profil: {selected_profile.name}")
     print(f"Mode Spotify: {spotify_mode}")
+    print(f"Mode video: {video_mode}")
     print()
+    upsert_profile(selected_profile)
     return LaunchConfig(
         output_docx=output_docx,
         initials_by_author=initials_by_author,
-        include_summary=include_summary,
-        spotify_mode=spotify_mode,
+        profile=selected_profile,
     )
 
 
@@ -94,3 +116,33 @@ def _prompt_choice(label: str, default: str, options: dict[str, str]) -> str:
         print(f"  {marker} {key}: {description}")
     value = input(f"Choix [{default}]: ").strip().lower()
     return value if value in options else default
+
+
+def _prompt_profile_selection(profiles: list[UserProfile]) -> UserProfile:
+    if not profiles:
+        return default_profile()
+    print()
+    print("Profils")
+    print("-------")
+    for index, profile in enumerate(profiles, start=1):
+        print(f"  {index}. {profile.name}")
+    default_index = 1
+    value = input(f"Profil a utiliser [{default_index}]: ").strip()
+    try:
+        selected_index = int(value) if value else default_index
+    except ValueError:
+        selected_index = default_index
+    selected_index = min(max(selected_index, 1), len(profiles))
+    selected = profiles[selected_index - 1]
+
+    rename = input(f"Nom du profil a enregistrer [{selected.name}]: ").strip()
+    if not rename:
+        return selected
+    return UserProfile(
+        name=rename,
+        include_summary=selected.include_summary,
+        spotify_mode=selected.spotify_mode,
+        video_mode=selected.video_mode,
+        enrich_public_urls=selected.enrich_public_urls,
+        network=selected.network,
+    )

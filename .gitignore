@@ -1,7 +1,9 @@
 .DS_Store
 .venv/
+.venv-old/
 __pycache__/
 *.pyc
+*.egg-info/
 dist/
 build/
 *.docx
