@@ -22,6 +22,13 @@ This file should be kept pragmatic and test-oriented.
 - URL fallback HTML decoding is robust across common encodings.
 - Google Drive upload failures no longer hard-stop generation.
 - Google Drive service/folder reuse is implemented for video uploads.
+- Spotify `poeme` mode is implemented and validated on real files.
+- Spotify poem blocks use section breaks, column breaks, and a blank line before lyrics.
+- Inline attachment parsing now catches attachments that appear on continuation lines.
+- Local audio transcription is integrated into the document pipeline.
+- English audio transcription is validated as good enough for current use.
+- French audio transcription is acceptable with a stronger local model.
+- Dutch should use the same stronger local model strategy as French.
 
 ## Known Product Constraints
 
@@ -31,41 +38,35 @@ This file should be kept pragmatic and test-oriented.
 
 ## Priority Order For The Next Work
 
-1. Audio transcription
-2. URLs carrying no useful information
-3. Rich media URL handling
-4. Spotify false positives and remaining poem refinements
-5. Layout and document polish
-6. Multi-step assistant UX
-7. Full-link investigation for unresolved cases
+1. URLs carrying no useful information
+2. Rich media URL handling
+3. Spotify false positives and remaining poem refinements
+4. Layout and document polish
+5. Multi-step assistant UX
+6. Full-link investigation for unresolved cases
 
-## Batch 1: Audio Transcription
+## Validated Recently
 
-### Goals
+### Spotify
 
-- Add transcription support for WhatsApp audio attachments.
-- Keep privacy and deployment flexibility in mind.
+- The new Spotify poem format is now the reference format.
+- The section-break / continuous-section approach is validated.
+- Murithul and Dominique were both used as real test corpora.
+- A blank paragraph before the lyrics block is part of the approved format.
 
-### Tasks
+### Audio Transcription
 
-- Decide the first transcription backend.
-- Start with a robust local-first implementation if feasible.
-- Detect audio attachments and include a transcript block in the document.
-- Preserve the attachment itself while adding transcript text.
-- Expose audio transcription as an explicit option in the UI/profile system.
+- Jilan validates the English audio flow.
+- Bruno validates that the transcription feature is useful enough to keep.
+- Current language strategy:
+  - English can use a lighter local model.
+  - French should use `medium`.
+  - Dutch should also use `medium`.
+- Current quality position:
+  - English: validated.
+  - French: acceptable, but not final-quality without re-reading.
 
-### Acceptance Criteria
-
-- Audio attachments are detected reliably.
-- A transcript can be inserted in the document when enabled.
-- A failed transcription does not block document generation.
-- The output clearly distinguishes original audio from transcript text.
-
-### Next Test Data
-
-- Use `WhatsApp Chat - Jilan Anwar.zip` as the next transcript test corpus.
-
-## Batch 2: URLs With No Useful Information
+## Batch 1: URLs With No Useful Information
 
 ### Goals
 
@@ -93,7 +94,7 @@ This file should be kept pragmatic and test-oriented.
 - These links remain clickable.
 - Error states are visible in the document when a link is unreachable.
 
-## Batch 3: Rich Media URL Handling
+## Batch 2: Rich Media URL Handling
 
 ### Goals
 
@@ -128,7 +129,7 @@ This file should be kept pragmatic and test-oriented.
 - LinkedIn summaries are capped to a useful length.
 - No preview should be inserted if it adds no real information.
 
-## Batch 4: Spotify False Positives And Remaining Poem Refinements
+## Batch 3: Spotify False Positives And Remaining Poem Refinements
 
 ### Goals
 
@@ -138,11 +139,11 @@ This file should be kept pragmatic and test-oriented.
 
 ### Tasks
 
-- Add a blank paragraph before the inserted lyrics block.
 - Re-check classical/instrumental false positives such as Beethoven 5th.
 - Preserve correct `Paroles trouvables: non` behavior for instrumental albums and piano-only works.
 - Keep the new section-break + column-break poem format as the standard.
 - Re-test wrapped/share Spotify links under the same rules.
+- Keep the pre-lyrics blank line in place.
 
 ### Acceptance Criteria
 
@@ -151,7 +152,7 @@ This file should be kept pragmatic and test-oriented.
 - Non-lyrical Spotify items continue to render as concise metadata blocks.
 - The poem format remains stable on both Murithul and Dominique test files.
 
-## Batch 5: Layout And Document Polish
+## Batch 4: Layout And Document Polish
 
 ### Goals
 
@@ -175,7 +176,7 @@ This file should be kept pragmatic and test-oriented.
 - Redundant previews are reduced.
 - Media blocks look intentional, not accidental.
 
-## Batch 6: Assistant UX
+## Batch 5: Assistant UX
 
 ### Goals
 
@@ -203,7 +204,7 @@ This file should be kept pragmatic and test-oriented.
 - The generation screen communicates what is happening.
 - The result screen shows warnings in a readable way.
 
-## Batch 7: Full-Link Investigation For Unresolved Cases
+## Batch 6: Full-Link Investigation For Unresolved Cases
 
 ### Goals
 
@@ -240,8 +241,7 @@ This file should be kept pragmatic and test-oriented.
 ### Confirmed or likely real issues
 
 - Terminal remains attached to the app process when launched from Terminal; expected for now.
-- Participant abbreviation mismatch between UI and generated document must be verified and fixed.
-- Participant abbreviations must appear in the intro.
+- Participant abbreviations must remain visible in the intro.
 - YouTube descriptions are too weak.
 - Teams preview is not useful.
 - Some unresolved links need manual inspection one by one.
@@ -255,6 +255,17 @@ This file should be kept pragmatic and test-oriented.
 - LinkedIn summary can be too long.
 - Some media blocks still feel redundant or overly literal.
 - Some inline links still appear in the document when the preview/metadata block should probably replace them.
+
+## Confirmed Feedback From Jilan And Bruno Tests
+
+- English audio transcription is good enough to keep.
+- French audio transcription is acceptable only with a stronger local model.
+- Dutch should use the same stronger local model strategy as French.
+- Inline photo attachments on continuation lines were missing and are now fixed.
+- `Généré le:` replaces `Genere le:` in the introduction.
+- Bruno full-run with Spotify, audio, and URL enrichment is acceptable as a baseline.
+- Klara Festival missing image preview needs investigation.
+- YouTube handling remains on the active URL improvement backlog.
 
 ## Working Rule For Future Changes
 
