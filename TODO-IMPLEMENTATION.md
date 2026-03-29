@@ -31,37 +31,15 @@ This file should be kept pragmatic and test-oriented.
 
 ## Priority Order For The Next Work
 
-1. Spotify poem mode
-2. Audio transcription
-3. URLs carrying no useful information
-4. Rich media URL handling
+1. Audio transcription
+2. URLs carrying no useful information
+3. Rich media URL handling
+4. Spotify false positives and remaining poem refinements
 5. Layout and document polish
 6. Multi-step assistant UX
+7. Full-link investigation for unresolved cases
 
-## Batch 1: Spotify Mode Poeme
-
-### Goals
-
-- Make `spotify_mode = poeme` real, not only declarative.
-- Distinguish better between lyrical music and instrumental/classical content.
-- Avoid false positives such as Beethoven works incorrectly marked as lyrics-searchable.
-
-### Tasks
-
-- Implement a proper `poeme` rendering branch for Spotify links.
-- Decide how lyrics are fetched or inferred.
-- Add robust heuristics for `Paroles trouvables`.
-- Treat classical, piano-only, instrumental, and likely non-lyric works conservatively.
-- Ensure wrapped/share Spotify links inherit the same treatment.
-
-### Acceptance Criteria
-
-- In `simple` mode, Spotify shows concise metadata only.
-- In `poeme` mode, lyrics are inserted only when confidence is high enough.
-- Beethoven / instrumental examples do not incorrectly claim lyrics are available.
-- Album-only links do not behave like song lyrics candidates.
-
-## Batch 2: Audio Transcription
+## Batch 1: Audio Transcription
 
 ### Goals
 
@@ -83,7 +61,11 @@ This file should be kept pragmatic and test-oriented.
 - A failed transcription does not block document generation.
 - The output clearly distinguishes original audio from transcript text.
 
-## Batch 3: URLs With No Useful Information
+### Next Test Data
+
+- Use `WhatsApp Chat - Jilan Anwar.zip` as the next transcript test corpus.
+
+## Batch 2: URLs With No Useful Information
 
 ### Goals
 
@@ -96,6 +78,7 @@ This file should be kept pragmatic and test-oriented.
 - Zoom
 - Google Meet
 - Similar meeting / logistics links
+- Microsoft Teams images/previews specifically removed when they add no useful information.
 
 ### Tasks
 
@@ -110,7 +93,7 @@ This file should be kept pragmatic and test-oriented.
 - These links remain clickable.
 - Error states are visible in the document when a link is unreachable.
 
-## Batch 4: Rich Media URL Handling
+## Batch 3: Rich Media URL Handling
 
 ### Goals
 
@@ -125,6 +108,7 @@ This file should be kept pragmatic and test-oriented.
 - Google Docs shared documents
 - X / Twitter
 - LinkedIn posts
+- SWR and similar media-rich article/video pages
 
 ### Tasks
 
@@ -134,6 +118,8 @@ This file should be kept pragmatic and test-oriented.
 - Explore clickable preview support for Google Docs shared documents.
 - Shorten oversized LinkedIn summaries.
 - Explore an `X` treatment analogous to Facebook where possible.
+- Ensure mixed message + inline URL cases do not duplicate or misplace the raw link when a useful preview exists.
+- Review why some pages are classified with technical labels such as `Type: page` or `Type: video.other` and replace them with more human output.
 
 ### Acceptance Criteria
 
@@ -141,6 +127,29 @@ This file should be kept pragmatic and test-oriented.
 - Dropbox and Google Drive video links render as video-like entries.
 - LinkedIn summaries are capped to a useful length.
 - No preview should be inserted if it adds no real information.
+
+## Batch 4: Spotify False Positives And Remaining Poem Refinements
+
+### Goals
+
+- Keep the new Spotify poem format as the reference format.
+- Reduce remaining false positives in lyrics detection without regressing working cases.
+- Polish the poem layout so columns balance more naturally.
+
+### Tasks
+
+- Add a blank paragraph before the inserted lyrics block.
+- Re-check classical/instrumental false positives such as Beethoven 5th.
+- Preserve correct `Paroles trouvables: non` behavior for instrumental albums and piano-only works.
+- Keep the new section-break + column-break poem format as the standard.
+- Re-test wrapped/share Spotify links under the same rules.
+
+### Acceptance Criteria
+
+- Lyrics blocks begin after a blank line and distribute more evenly across columns.
+- Beethoven-like cases do not incorrectly return `oui`.
+- Non-lyrical Spotify items continue to render as concise metadata blocks.
+- The poem format remains stable on both Murithul and Dominique test files.
 
 ## Batch 5: Layout And Document Polish
 
@@ -156,6 +165,8 @@ This file should be kept pragmatic and test-oriented.
 - Prevent unnecessary or redundant preview blocks.
 - Improve summary/introduction formatting.
 - Include participant abbreviations explicitly in the introduction.
+- Ensure participant abbreviations in the generated intro match the values chosen in the UI.
+- Investigate and fix cases where images exceed page margins on real documents.
 
 ### Acceptance Criteria
 
@@ -184,6 +195,7 @@ This file should be kept pragmatic and test-oriented.
   - summary on/off
   - audio transcription on/off
 - Show warnings and progress more clearly.
+- Preserve terminal usability expectations until the app is packaged as a standalone macOS application.
 
 ### Acceptance Criteria
 
@@ -191,10 +203,43 @@ This file should be kept pragmatic and test-oriented.
 - The generation screen communicates what is happening.
 - The result screen shows warnings in a readable way.
 
-## Confirmed Feedback From Dominique Test
+## Batch 7: Full-Link Investigation For Unresolved Cases
+
+### Goals
+
+- Review unresolved or weakly resolved links one by one instead of relying on generic rules.
+
+### Targets
+
+- `https://ppsimons.com/2018/05/20/het-beethoven-fries-van-klimt-en-de-negende-symfonie-van-beethoven`
+- `https://share.mindmanager.com/#publish/NCoHDx_lAAP89WYXyPQ2J4R-cvTUV8BtBqWyh0H0`
+- `https://gocar.be/nl/autonieuws/mobiliteit/elektrische-mobiliteit-de-eu-denkwijze-is-onrealistisch`
+- `https://www.josvanimmerseel.com/huisconcerten`
+- `https://app.emergent.sh/landing/?via=dde`
+- erroring links from `scaleup.vlaanderen`, `jobtoolz.be`, and `googleadservices.com`
+
+### Tasks
+
+- Inspect each target manually and determine the exact failure mode:
+  - blocked by bot protection
+  - missing Open Graph metadata
+  - redirect chain issue
+  - unusual HTML structure
+  - unsupported document/share type
+- Encode a source-specific handling rule where useful.
+- Ensure error links produce an explicit human-readable message in the document.
+
+### Acceptance Criteria
+
+- Each listed link has a documented reason for current behavior.
+- Where feasible, handling is improved.
+- Where not feasible, the document states the failure clearly.
+
+## Confirmed Feedback From Dominique Test And Follow-Up
 
 ### Confirmed or likely real issues
 
+- Terminal remains attached to the app process when launched from Terminal; expected for now.
 - Participant abbreviation mismatch between UI and generated document must be verified and fixed.
 - Participant abbreviations must appear in the intro.
 - YouTube descriptions are too weak.
@@ -203,14 +248,13 @@ This file should be kept pragmatic and test-oriented.
 - Erroring links should say so explicitly in the document.
 - Lyrics detection is too optimistic for some classical content.
 - Dropbox / Google Drive remote video links should be treated more like videos.
+- Dubb-hosted video links should be treated more like videos.
+- Google Docs shared documents deserve a clickable preview if feasible.
+- X / Twitter should be evaluated for a Facebook-like treatment.
 - Some previews are too large or exceed margins.
 - LinkedIn summary can be too long.
-
-### Observed but not yet fully designed
-
-- X / Twitter should be evaluated for a Facebook-like treatment.
-- Shared Google Docs deserve a clickable preview if feasible.
 - Some media blocks still feel redundant or overly literal.
+- Some inline links still appear in the document when the preview/metadata block should probably replace them.
 
 ## Working Rule For Future Changes
 
@@ -219,4 +263,3 @@ This file should be kept pragmatic and test-oriented.
 - Prefer concise, useful metadata over noisy screenshots.
 - Preserve clickability wherever possible.
 - Optimize for document readability first, technical completeness second.
-

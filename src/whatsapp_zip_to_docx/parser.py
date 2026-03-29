@@ -54,21 +54,15 @@ def parse_chat(chat_text: str, attachments_dir: Path) -> list[Message]:
                 f"{match.group('date')} {match.group('time')}",
                 "%d/%m/%Y %H:%M:%S",
             )
-            body = match.group("body")
-            body = _clean_body_text(body)
-            attachment = None
-            attachment_match = ATTACHMENT_RE.search(body)
-            if attachment_match:
-                filename = attachment_match.group("filename")
-                attachment = Attachment(filename=filename, path=attachments_dir / filename)
-                body = _strip_attachment_label(body[: attachment_match.start()])
+            body = _clean_body_text(match.group("body"))
+            body, attachment = _extract_inline_attachment(body, attachments_dir)
 
             current = Message(
                 timestamp=timestamp,
                 author=match.group("author"),
                 body=body,
                 attachment=attachment,
-                urls=URL_RE.findall(body),
+                urls=_extract_urls(body),
             )
             if _should_skip_message(current):
                 current = None
@@ -79,7 +73,9 @@ def parse_chat(chat_text: str, attachments_dir: Path) -> list[Message]:
 
         cleaned_line = _clean_body_text(line)
         current.body = f"{current.body}\n{cleaned_line}" if current.body else cleaned_line
-        current.urls = URL_RE.findall(current.body)
+        if current.attachment is None:
+            current.body, current.attachment = _extract_inline_attachment(current.body, attachments_dir)
+        current.urls = _extract_urls(current.body)
 
     if current is not None:
         messages.append(current)
@@ -113,3 +109,35 @@ def _strip_attachment_label(text: str) -> str:
             return label
         return ""
     return candidate
+
+
+def _extract_inline_attachment(text: str, attachments_dir: Path) -> tuple[str, Optional[Attachment]]:
+    attachment_match = ATTACHMENT_RE.search(text)
+    if not attachment_match:
+        return text, None
+    filename = attachment_match.group("filename")
+    attachment = Attachment(filename=filename, path=attachments_dir / filename)
+    cleaned_text = _strip_attachment_label(text[: attachment_match.start()])
+    return cleaned_text, attachment
+
+
+def _extract_urls(text: str) -> list[str]:
+    return [_clean_extracted_url(match.group(0)) for match in URL_RE.finditer(text)]
+
+
+def _clean_extracted_url(url: str) -> str:
+    cleaned = url.rstrip(".,;:!?")
+    return _strip_unbalanced_trailing_brackets(cleaned)
+
+
+def _strip_unbalanced_trailing_brackets(url: str) -> str:
+    pairs = (("(", ")"), ("[", "]"), ("{", "}"))
+    cleaned = url
+    changed = True
+    while changed and cleaned:
+        changed = False
+        for opener, closer in pairs:
+            if cleaned.endswith(closer) and cleaned.count(closer) > cleaned.count(opener):
+                cleaned = cleaned[:-1]
+                changed = True
+    return cleaned

@@ -9,7 +9,7 @@ import re
 import subprocess
 from typing import Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 TITLE_RE = re.compile(r"<title>(?P<title>.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -19,6 +19,9 @@ LOW_INFORMATION_DOMAINS = (
     "zoom.us",
     "meet.google.com",
 )
+LRCLIB_API_URL = "https://lrclib.net/api/search"
+LYRIC_TIMESTAMP_RE = re.compile(r"^\[[0-9:.]+\]\s*")
+_LYRICS_CACHE: dict[tuple[str, str], Optional[str]] = {}
 
 
 @dataclass
@@ -36,6 +39,7 @@ class UrlInfo:
     og_site_name: Optional[str] = None
     author: Optional[str] = None
     image_fetchable: Optional[bool] = None
+    spotify_lyrics: Optional[str] = None
     error: Optional[str] = None
 
     @property
@@ -76,9 +80,35 @@ class UrlInfo:
     def lyrics_searchable(self) -> Optional[bool]:
         if self.kind != "spotify":
             return None
-        if (self.og_type or "").lower() == "music.song" and (self.og_title or self.page_title):
-            return True
-        return False
+        return bool(self.spotify_lyrics)
+
+    @property
+    def spotify_title(self) -> Optional[str]:
+        if self.kind != "spotify":
+            return None
+        title = self.og_title or self.page_title
+        if not title:
+            return None
+        if title.endswith(" | Spotify"):
+            title = title.removesuffix(" | Spotify")
+        return title.strip() or None
+
+    @property
+    def spotify_resource_type(self) -> Optional[str]:
+        if self.kind != "spotify":
+            return None
+        path = urlparse(self.final_url or self.original_url).path.lower()
+        if "/track/" in path:
+            return "track"
+        if "/album/" in path:
+            return "album"
+        if "/playlist/" in path:
+            return "playlist"
+        if "/artist/" in path:
+            return "artist"
+        if "/episode/" in path:
+            return "episode"
+        return None
 
     @property
     def can_embed_post_image(self) -> Optional[bool]:
@@ -206,6 +236,7 @@ def inspect_url(url: str, timeout: float = 10.0) -> UrlInfo:
                     _populate_html_metadata(info, fallback_html)
                     if info.og_image and info.image_fetchable is None:
                         info.image_fetchable = _is_fetchable_image(info.og_image, timeout=timeout)
+            _populate_spotify_metadata(info, timeout=timeout)
             return info
     except HTTPError as exc:
         parsed = urlparse(exc.geturl() or normalized_url)
@@ -223,6 +254,7 @@ def inspect_url(url: str, timeout: float = 10.0) -> UrlInfo:
                 _populate_html_metadata(info, fallback_html)
                 if info.og_image:
                     info.image_fetchable = _is_fetchable_image(info.og_image, timeout=timeout)
+        _populate_spotify_metadata(info, timeout=timeout)
         return info
     except URLError as exc:
         parsed = urlparse(url)
@@ -313,6 +345,7 @@ def _request_headers() -> dict[str, str]:
 
 
 def _normalize_url(url: str) -> str:
+    url = _strip_trailing_url_punctuation(url)
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
     if "spotify.com" not in domain:
@@ -324,6 +357,141 @@ def _normalize_url(url: str) -> str:
         return f"https://open.spotify.com/track/{track_ids[0]}"
 
     return url
+
+
+def _strip_trailing_url_punctuation(url: str) -> str:
+    cleaned = url.rstrip(".,;:!?")
+    for opener, closer in (("(", ")"), ("[", "]"), ("{", "}")):
+        while cleaned.endswith(closer) and cleaned.count(closer) > cleaned.count(opener):
+            cleaned = cleaned[:-1]
+    return cleaned
+
+
+def _populate_spotify_metadata(info: UrlInfo, timeout: float = 10.0) -> None:
+    if info.kind != "spotify":
+        return
+    if info.spotify_resource_type != "track":
+        return
+    title = info.spotify_title
+    artists = info.spotify_artists
+    if not title or not artists:
+        return
+    info.spotify_lyrics = _resolve_spotify_lyrics(title, artists, timeout=timeout)
+
+
+def _resolve_spotify_lyrics(track_name: str, artist_name: str, timeout: float = 10.0) -> Optional[str]:
+    artist_variants = [artist_name]
+    primary_artist = artist_name.split(",")[0].strip()
+    if primary_artist and primary_artist not in artist_variants:
+        artist_variants.append(primary_artist)
+
+    title_variants = [track_name]
+    stripped_brackets = re.sub(r"\s*[\[(].*?[\])]\s*", " ", track_name).strip()
+    if stripped_brackets and stripped_brackets not in title_variants:
+        title_variants.append(stripped_brackets)
+    leading_title = re.split(r"\s*[\[(]", track_name, maxsplit=1)[0].strip()
+    if leading_title and leading_title not in title_variants:
+        title_variants.append(leading_title)
+
+    for title_variant in title_variants:
+        for artist_variant in artist_variants:
+            lyrics = _fetch_spotify_lyrics(title_variant, artist_variant, timeout=timeout)
+            if lyrics:
+                return lyrics
+    return None
+
+
+def _fetch_spotify_lyrics(track_name: str, artist_name: str, timeout: float = 10.0) -> Optional[str]:
+    cache_key = (track_name.casefold(), artist_name.casefold())
+    if cache_key in _LYRICS_CACHE:
+        return _LYRICS_CACHE[cache_key]
+
+    query = urlencode({"track_name": track_name, "artist_name": artist_name})
+    request = Request(
+        f"{LRCLIB_API_URL}?{query}",
+        headers={
+            **_request_headers(),
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except (HTTPError, URLError, json.JSONDecodeError):
+        _LYRICS_CACHE[cache_key] = None
+        return None
+
+    lyrics = _select_best_lyrics_match(payload, track_name, artist_name)
+    _LYRICS_CACHE[cache_key] = lyrics
+    return lyrics
+
+
+def _select_best_lyrics_match(payload, track_name: str, artist_name: str) -> Optional[str]:
+    if not isinstance(payload, list):
+        return None
+
+    best_score = -1
+    best_lyrics: Optional[str] = None
+    target_track = _normalize_match_text(track_name)
+    target_artist = _normalize_match_text(artist_name.split(",")[0])
+
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        plain = entry.get("plainLyrics") or entry.get("plain_lyrics")
+        synced = entry.get("syncedLyrics") or entry.get("synced_lyrics")
+        lyrics = plain or _strip_lyric_timestamps(synced)
+        lyrics = _clean_lyrics_text(lyrics)
+        if not lyrics:
+            continue
+        score = 0
+        entry_track = _normalize_match_text(str(entry.get("trackName") or entry.get("track_name") or ""))
+        entry_artist = _normalize_match_text(str(entry.get("artistName") or entry.get("artist_name") or ""))
+        if entry_track == target_track:
+            score += 2
+        elif target_track and target_track in entry_track:
+            score += 1
+        if entry_artist == target_artist:
+            score += 2
+        elif target_artist and target_artist in entry_artist:
+            score += 1
+        if plain:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_lyrics = lyrics
+
+    return best_lyrics
+
+
+def _normalize_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _strip_lyric_timestamps(value: object) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    lines = [LYRIC_TIMESTAMP_RE.sub("", line).rstrip() for line in value.splitlines()]
+    return "\n".join(lines)
+
+
+def _clean_lyrics_text(value: object) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    lines = [line.strip() for line in value.splitlines()]
+    cleaned_lines: list[str] = []
+    previous_blank = True
+    for line in lines:
+        if not line:
+            if not previous_blank:
+                cleaned_lines.append("")
+            previous_blank = True
+            continue
+        cleaned_lines.append(line)
+        previous_blank = False
+    while cleaned_lines and cleaned_lines[-1] == "":
+        cleaned_lines.pop()
+    return "\n".join(cleaned_lines) or None
 
 
 def _populate_json_ld_metadata(info: UrlInfo, html: str) -> None:

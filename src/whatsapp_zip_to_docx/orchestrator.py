@@ -6,6 +6,7 @@ from datetime import datetime
 import mimetypes
 from pathlib import Path
 
+from .audio_transcription import AudioTranscript, transcribe_audio_attachments
 from .docx_writer import write_docx
 from .engine import EngineRequest, EngineResult, EngineWarning
 from .google_drive import DriveConfig, ensure_drive_service, ensure_folder, folder_web_link, upload_file
@@ -56,6 +57,7 @@ def generate_document(request: EngineRequest, drive_config: DriveConfig | None =
 
         attachment_links: dict[Path, str] = {}
         video_folder_link: str | None = None
+        audio_transcripts: dict[Path, AudioTranscript] = {}
         if request.profile.supports_drive_uploads():
             if drive_config is None:
                 warnings.append(
@@ -77,6 +79,28 @@ def generate_document(request: EngineRequest, drive_config: DriveConfig | None =
                         )
                     )
 
+        if request.profile.audio_transcription_enabled:
+            try:
+                audio_transcripts = transcribe_audio_attachments(messages)
+                success_count = sum(1 for transcript in audio_transcripts.values() if transcript.available)
+                failure_count = sum(1 for transcript in audio_transcripts.values() if not transcript.available)
+                if audio_transcripts:
+                    logs.append(f"Transcribed {success_count} audio attachment(s).")
+                if failure_count:
+                    warnings.append(
+                        EngineWarning(
+                            code="audio_transcription_partial",
+                            message=f"{failure_count} audio attachment(s) could not be transcribed.",
+                        )
+                    )
+            except Exception as exc:
+                warnings.append(
+                    EngineWarning(
+                        code="audio_transcription_failed",
+                        message=f"Audio transcription failed; continuing without transcripts. {exc}",
+                    )
+                )
+
         reply_links = {candidate.response_index: candidate for candidate in semantic_scoring_candidates(messages)}
         logs.append(f"Detected {len(reply_links)} reply link(s).")
 
@@ -87,7 +111,11 @@ def generate_document(request: EngineRequest, drive_config: DriveConfig | None =
             url_infos=url_infos if request.profile.enrich_public_urls else None,
             summary_lines=summary_lines,
             attachment_links=attachment_links,
+            audio_transcripts=audio_transcripts,
             reply_links=reply_links,
+            spotify_mode=request.profile.spotify_mode,
+            spotify_poem_columns=2 if request.profile.spotify_mode == "poeme" else 1,
+            spotify_poem_font_size_pt=9.0 if request.profile.spotify_mode == "poeme" else None,
             video_mode=request.profile.video_mode,
             video_folder_link=video_folder_link,
         )

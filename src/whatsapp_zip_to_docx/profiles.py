@@ -16,6 +16,7 @@ class UserProfile:
     include_summary: bool = True
     spotify_mode: str = "poeme"
     video_mode: str = "drive"
+    audio_transcription_enabled: bool = True
     enrich_public_urls: bool = True
     network: NetworkPolicy = field(default_factory=NetworkPolicy)
 

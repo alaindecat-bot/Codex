@@ -83,6 +83,7 @@ def _decode_profile(payload: object) -> UserProfile | None:
         include_summary=bool(payload.get("include_summary", True)),
         spotify_mode=str(payload.get("spotify_mode", "poeme")),
         video_mode=str(payload.get("video_mode", "drive")),
+        audio_transcription_enabled=bool(payload.get("audio_transcription_enabled", True)),
         enrich_public_urls=bool(payload.get("enrich_public_urls", True)),
         network=network,
     )

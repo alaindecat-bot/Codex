@@ -86,6 +86,7 @@ def main() -> int:
             include_summary=default_profile().include_summary,
             spotify_mode=default_profile().spotify_mode,
             video_mode="drive" if args.upload_videos_to_drive else "none",
+            audio_transcription_enabled=default_profile().audio_transcription_enabled,
             enrich_public_urls=args.enrich_urls,
             network=default_profile().network,
         )
@@ -120,11 +121,11 @@ def summarize_urls(url_infos) -> None:
     for url, info in url_infos.items():
         print(f"- {info.kind}: {info.original_url} -> {info.final_url}")
         if info.kind == "spotify":
-            print(f"  title: {info.og_title or info.page_title or 'n/a'}")
+            print(f"  title: {info.spotify_title or 'n/a'}")
             print(
-                "  lyrics_on_internet: likely yes"
+                "  lyrics_on_internet: yes"
                 if info.lyrics_searchable
-                else "  lyrics_on_internet: unclear"
+                else "  lyrics_on_internet: no"
             )
         elif info.kind == "facebook":
             print(f"  title: {info.og_title or info.page_title or 'n/a'}")

@@ -50,6 +50,10 @@ def prompt_launch_config(
             "none": "Ne pas traiter specialement les videos",
         },
     )
+    audio_transcription_enabled = _prompt_yes_no(
+        "Transcrire les fichiers audio",
+        default=profile.audio_transcription_enabled,
+    )
     print()
     print(f"Fichier source: {input_zip}")
     print(f"Sortie: {output_docx}")
@@ -58,12 +62,14 @@ def prompt_launch_config(
         include_summary=include_summary,
         spotify_mode=spotify_mode,
         video_mode=video_mode,
+        audio_transcription_enabled=audio_transcription_enabled,
         enrich_public_urls=profile.enrich_public_urls,
         network=profile.network,
     )
     print(f"Profil: {selected_profile.name}")
     print(f"Mode Spotify: {spotify_mode}")
     print(f"Mode video: {video_mode}")
+    print(f"Transcription audio: {'oui' if audio_transcription_enabled else 'non'}")
     print()
     upsert_profile(selected_profile)
     return LaunchConfig(
@@ -80,7 +86,7 @@ def build_summary_lines(messages: list[Message], generated_at: datetime) -> list
     return [
         f"Participants: {', '.join(authors)}",
         f"Periode: du {start:%d/%m/%Y} au {end:%d/%m/%Y}",
-        f"Genere le: {generated_at:%d/%m/%Y}",
+        f"Généré le: {generated_at:%d/%m/%Y}",
     ]
 
 
@@ -99,7 +105,7 @@ def build_summary_lines_with_initials(
     return [
         f"Participants: {participants}",
         f"Periode: du {start:%d/%m/%Y} au {end:%d/%m/%Y}",
-        f"Genere le: {generated_at:%d/%m/%Y}",
+        f"Généré le: {generated_at:%d/%m/%Y}",
     ]
 
 
@@ -162,6 +168,7 @@ def _prompt_profile_selection(profiles: list[UserProfile]) -> UserProfile:
         include_summary=selected.include_summary,
         spotify_mode=selected.spotify_mode,
         video_mode=selected.video_mode,
+        audio_transcription_enabled=selected.audio_transcription_enabled,
         enrich_public_urls=selected.enrich_public_urls,
         network=selected.network,
     )

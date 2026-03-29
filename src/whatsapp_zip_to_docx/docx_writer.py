@@ -7,13 +7,15 @@ import subprocess
 import tempfile
 
 from docx import Document
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.enum.section import WD_SECTION
+from docx.enum.text import WD_BREAK, WD_PARAGRAPH_ALIGNMENT
 from docx.image.exceptions import UnrecognizedImageError
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
+from .audio_transcription import AudioTranscript, is_supported_audio
 from .parser import Message
 from .reply_analysis import ReplyCandidate
 from .url_tools import UrlInfo, download_og_image
@@ -53,14 +55,22 @@ def write_docx(
     url_infos: dict[str, UrlInfo] | None = None,
     summary_lines: list[str] | None = None,
     attachment_links: dict[Path, str] | None = None,
+    audio_transcripts: dict[Path, AudioTranscript] | None = None,
     reply_links: dict[int, ReplyCandidate] | None = None,
+    spotify_mode: str = "simple",
     video_mode: str = "none",
     video_folder_link: str | None = None,
+    body_font_size_pt: float = 10.5,
+    column_count: int = 1,
+    spotify_poem_columns: int = 1,
+    spotify_poem_font_size_pt: float | None = None,
 ) -> None:
     document = Document()
-    _configure_document_styles(document)
+    _configure_document_styles(document, body_font_size_pt=body_font_size_pt)
+    _configure_document_layout(document, column_count=column_count)
     url_infos = url_infos or {}
     attachment_links = attachment_links or {}
+    audio_transcripts = audio_transcripts or {}
     reply_links = reply_links or {}
 
     if summary_lines:
@@ -122,6 +132,12 @@ def write_docx(
                     )
                 else:
                     _add_plain_paragraph(document, message.attachment.filename)
+            elif message.attachment and is_supported_audio(message.attachment.path):
+                header_paragraph = _add_plain_paragraph(document, header)
+                header_paragraph.paragraph_format.keep_with_next = True
+                if reply_candidate is not None:
+                    _add_reply_marker(document, messages, initials_by_author, reply_candidate)
+                _add_audio_block(document, audio_transcripts.get(message.attachment.path))
             elif message.attachment:
                 text = message.attachment.filename
                 if reply_candidate is not None:
@@ -137,11 +153,14 @@ def write_docx(
                     header,
                     message.body,
                     url_infos,
+                    spotify_mode,
                     next_is_new_day,
                     preview_dir,
                     messages=messages,
                     initials_by_author=initials_by_author,
                     reply_candidate=reply_candidate,
+                    spotify_poem_columns=spotify_poem_columns,
+                    spotify_poem_font_size_pt=spotify_poem_font_size_pt,
                 )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -169,7 +188,13 @@ def _is_url_only_message(body: str) -> bool:
     return stripped.startswith("http://") or stripped.startswith("https://")
 
 
-def _append_url_metadata(document: Document, info: UrlInfo | None) -> bool:
+def _append_url_metadata(
+    document: Document,
+    info: UrlInfo | None,
+    spotify_mode: str = "simple",
+    spotify_poem_columns: int = 1,
+    spotify_poem_font_size_pt: float | None = None,
+) -> bool:
     if info is None:
         return False
 
@@ -186,14 +211,12 @@ def _append_url_metadata(document: Document, info: UrlInfo | None) -> bool:
 
     if info.kind == "spotify":
         details = []
-        title = info.og_title or info.page_title
+        title = info.spotify_title
         if title:
-            if title.endswith(" | Spotify"):
-                title = title.removesuffix(" | Spotify")
             details.append(title)
         if info.spotify_artists:
             details.append(f"Artiste(s): {info.spotify_artists}")
-        if info.lyrics_searchable is not None:
+        if spotify_mode != "poeme" or not info.spotify_lyrics:
             details.append(
                 "Paroles trouvables: oui"
                 if info.lyrics_searchable
@@ -204,6 +227,13 @@ def _append_url_metadata(document: Document, info: UrlInfo | None) -> bool:
         _add_url_title_line(document, details[0], hyperlink=info.final_url)
         for line in details[1:]:
             _add_url_detail_line(document, line)
+        if spotify_mode == "poeme" and info.spotify_lyrics:
+            _add_spotify_lyrics_poem(
+                document,
+                info.spotify_lyrics,
+                column_count=spotify_poem_columns,
+                font_size_pt=spotify_poem_font_size_pt,
+            )
         return True
 
     if info.kind == "facebook":
@@ -245,11 +275,14 @@ def _write_message_body(
     header: str,
     body: str,
     url_infos: dict[str, UrlInfo],
+    spotify_mode: str,
     next_is_new_day: bool,
     preview_dir: Path,
     messages: list[Message],
     initials_by_author: dict[str, str],
     reply_candidate: ReplyCandidate | None = None,
+    spotify_poem_columns: int = 1,
+    spotify_poem_font_size_pt: float | None = None,
 ) -> None:
     lines = body.splitlines() or [body]
     if _is_poem(body):
@@ -286,7 +319,15 @@ def _write_message_body(
 
         if line_urls:
             if len(line_urls) == 1 and stripped == line_urls[0]:
-                appended_metadata = _render_url(document, line_urls[0], url_infos, preview_dir) or appended_metadata
+                appended_metadata = _render_url(
+                    document,
+                    line_urls[0],
+                    url_infos,
+                    preview_dir,
+                    spotify_mode=spotify_mode,
+                    spotify_poem_columns=spotify_poem_columns,
+                    spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+                ) or appended_metadata
             else:
                 for url in line_urls:
                     appended_metadata = _render_url(
@@ -294,6 +335,9 @@ def _write_message_body(
                         url,
                         url_infos,
                         preview_dir,
+                        spotify_mode=spotify_mode,
+                        spotify_poem_columns=spotify_poem_columns,
+                        spotify_poem_font_size_pt=spotify_poem_font_size_pt,
                         render_fallback_quote=False,
                     ) or appended_metadata
         elif stripped:
@@ -308,14 +352,31 @@ def _write_message_body(
         document.add_paragraph("")
 
 
-def _configure_document_styles(document: Document) -> None:
+def _configure_document_styles(document: Document, body_font_size_pt: float = 10.5) -> None:
     normal_style = document.styles["Normal"]
     normal_style.font.name = "Calibri"
-    normal_style.font.size = Pt(10.5)
+    normal_style.font.size = Pt(body_font_size_pt)
     r_fonts = normal_style.element.rPr.rFonts
     r_fonts.set(qn("w:ascii"), "Calibri")
     r_fonts.set(qn("w:hAnsi"), "Calibri")
     r_fonts.set(qn("w:cs"), "Calibri")
+
+
+def _configure_document_layout(document: Document, column_count: int = 1) -> None:
+    if column_count <= 1:
+        return
+    section = document.sections[0]
+    _set_section_columns(section, column_count)
+
+
+def _set_section_columns(section, column_count: int) -> None:
+    sect_pr = section._sectPr
+    cols = sect_pr.find(qn("w:cols"))
+    if cols is None:
+        cols = OxmlElement("w:cols")
+        sect_pr.append(cols)
+    cols.set(qn("w:num"), str(column_count))
+    cols.set(qn("w:space"), "709" if column_count > 1 else "720")
 
 
 def _add_month_heading(document: Document, year: int, month: int) -> None:
@@ -380,6 +441,72 @@ def _add_url_detail_line(document: Document, text: str) -> None:
     paragraph.paragraph_format.space_after = Pt(0)
     run = paragraph.add_run(text)
     _apply_run_format(run, courier=True)
+
+
+def _add_spotify_lyrics_poem(
+    document: Document,
+    lyrics: str,
+    column_count: int = 1,
+    font_size_pt: float | None = None,
+) -> None:
+    document.add_paragraph("")
+    stanzas: list[list[str]] = []
+    current: list[str] = []
+    for raw_line in lyrics.splitlines():
+        line = raw_line.strip()
+        if line:
+            current.append(line)
+        else:
+            if current:
+                stanzas.append(current)
+                current = []
+    if current:
+        stanzas.append(current)
+
+    if column_count > 1:
+        two_col_section = document.add_section(WD_SECTION.CONTINUOUS)
+        _set_section_columns(two_col_section, column_count)
+
+    stanza_break_index = _spotify_column_break_index(stanzas) if column_count > 1 else None
+    for stanza_index, stanza in enumerate(stanzas):
+        paragraph = document.add_paragraph()
+        paragraph.paragraph_format.left_indent = Inches(0.55)
+        paragraph.paragraph_format.space_before = Pt(1)
+        paragraph.paragraph_format.space_after = Pt(4)
+        for index, line in enumerate(stanza):
+            run = paragraph.add_run(line)
+            _apply_run_format(run, italic=True, size=Pt(font_size_pt) if font_size_pt else None)
+            if index < len(stanza) - 1:
+                run.add_break()
+        if stanza_break_index is not None and stanza_index == stanza_break_index:
+            break_paragraph = document.add_paragraph()
+            break_paragraph.paragraph_format.left_indent = Inches(0.55)
+            break_run = break_paragraph.add_run()
+            _apply_run_format(break_run, italic=True, size=Pt(font_size_pt) if font_size_pt else None)
+            break_run.add_break(WD_BREAK.COLUMN)
+
+    if column_count > 1:
+        one_col_section = document.add_section(WD_SECTION.CONTINUOUS)
+        _set_section_columns(one_col_section, 1)
+
+
+def _spotify_column_break_index(stanzas: list[list[str]]) -> int | None:
+    if len(stanzas) < 2:
+        return None
+    total_lines = sum(len(stanza) for stanza in stanzas)
+    if total_lines < 8:
+        return None
+    running = 0
+    best_index = None
+    best_distance = None
+    target = total_lines / 2
+    for index, stanza in enumerate(stanzas[:-1]):
+        running += len(stanza)
+        distance = abs(target - running)
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_index = index
+    return best_index
 
 
 def _add_plain_paragraph(document: Document, text: str):
@@ -450,6 +577,37 @@ def _add_attachment_caption(document: Document, text: str, subtle: bool = False)
     )
 
 
+def _add_audio_block(document: Document, transcript: AudioTranscript | None) -> None:
+    label_paragraph = document.add_paragraph()
+    label_paragraph.paragraph_format.left_indent = Inches(0.25)
+    label_paragraph.paragraph_format.space_before = Pt(1)
+    label_paragraph.paragraph_format.space_after = Pt(1)
+    label_paragraph.paragraph_format.keep_with_next = True
+    label_run = label_paragraph.add_run("Audio")
+    _apply_run_format(label_run, italic=True, size=Pt(9), color=RGBColor(0x66, 0x66, 0x66))
+
+    transcript_label = "Transcription"
+    if transcript and transcript.language:
+        transcript_label = f"Transcription ({transcript.language})"
+    transcript_label_paragraph = document.add_paragraph()
+    transcript_label_paragraph.paragraph_format.left_indent = Inches(0.35)
+    transcript_label_paragraph.paragraph_format.space_before = Pt(0)
+    transcript_label_paragraph.paragraph_format.space_after = Pt(1)
+    transcript_label_paragraph.paragraph_format.keep_with_next = True
+    transcript_label_run = transcript_label_paragraph.add_run(transcript_label)
+    _apply_run_format(transcript_label_run, italic=True, size=Pt(9), color=RGBColor(0x66, 0x66, 0x66))
+
+    body_paragraph = document.add_paragraph()
+    body_paragraph.paragraph_format.left_indent = Inches(0.45)
+    body_paragraph.paragraph_format.space_before = Pt(0)
+    body_paragraph.paragraph_format.space_after = Pt(6)
+    body_text = "Transcription indisponible"
+    if transcript and transcript.available and transcript.text:
+        body_text = transcript.text
+    body_run = body_paragraph.add_run(body_text)
+    _apply_run_format(body_run, size=Pt(10))
+
+
 def _append_web_preview(
     document: Document,
     info: UrlInfo,
@@ -476,6 +634,9 @@ def _render_url(
     url: str,
     url_infos: dict[str, UrlInfo],
     preview_dir: Path,
+    spotify_mode: str = "simple",
+    spotify_poem_columns: int = 1,
+    spotify_poem_font_size_pt: float | None = None,
     render_fallback_quote: bool = True,
 ) -> bool:
     info = url_infos.get(url)
@@ -485,28 +646,64 @@ def _render_url(
         return False
 
     if info.kind == "spotify":
-        return _append_url_metadata(document, info)
+        return _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
 
     if info.kind == "facebook":
-        rendered = _append_url_metadata(document, info)
+        rendered = _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
         _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
         return rendered or bool(info.og_image)
 
     if info.kind == "meeting":
-        return _append_url_metadata(document, info)
+        return _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
 
     if info.kind == "webpage" and info.og_image:
-        rendered = _append_url_metadata(document, info)
+        rendered = _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
         _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
         return rendered or True
 
     if info.kind == "webpage":
-        rendered = _append_url_metadata(document, info)
+        rendered = _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
         if render_fallback_quote:
             _add_quote_paragraph(document, url, hyperlink=url)
         return rendered
 
-    rendered = _append_url_metadata(document, info)
+    rendered = _append_url_metadata(
+        document,
+        info,
+        spotify_mode=spotify_mode,
+        spotify_poem_columns=spotify_poem_columns,
+        spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+    )
     if render_fallback_quote and info.kind != "unreachable":
         _add_quote_paragraph(document, url, hyperlink=url)
     return rendered
