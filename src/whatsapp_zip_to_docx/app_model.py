@@ -7,6 +7,13 @@ from .app_session import DocumentSession, ParticipantSuggestion
 from .engine import EngineRequest, EngineResult
 from .google_drive import DriveConfig
 from .profiles import UserProfile
+from .timing_estimator import (
+    DEFAULT_TIMEOUT_MULTIPLIER,
+    TimingPrediction,
+    estimate_timing,
+    load_timing_history,
+    summarize_workload,
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +28,10 @@ class AssistantState:
     output_docx: Path
     selected_profile_name: str
     participants: list[ParticipantDraft]
+    write_performance_report: bool = True
+    timeout_mode: str = "multiplier"
+    timeout_multiplier: float = DEFAULT_TIMEOUT_MULTIPLIER
+    timeout_fixed_seconds: float = 900.0
 
     @classmethod
     def from_session(cls, session: DocumentSession) -> "AssistantState":
@@ -65,6 +76,19 @@ class AssistantState:
             output_docx=output_docx,
         )
 
+    def with_performance_report(self, enabled: bool) -> "AssistantState":
+        return replace(self, write_performance_report=enabled)
+
+    def with_timeout_mode(self, timeout_mode: str) -> "AssistantState":
+        normalized = timeout_mode if timeout_mode in {"multiplier", "fixed"} else "multiplier"
+        return replace(self, timeout_mode=normalized)
+
+    def with_timeout_multiplier(self, value: float) -> "AssistantState":
+        return replace(self, timeout_multiplier=max(1.0, value))
+
+    def with_timeout_fixed_seconds(self, value: float) -> "AssistantState":
+        return replace(self, timeout_fixed_seconds=max(60.0, value))
+
     def with_participant_initial(self, author_name: str, initial: str) -> "AssistantState":
         updated_participants = [
             replace(participant, initial=initial.upper())
@@ -79,7 +103,8 @@ class AssistantState:
             initials_by_author={
                 participant.author_name: participant.initial
                 for participant in self.participants
-            }
+            },
+            write_performance_report=self.write_performance_report,
         )
 
     def generate(self, drive_config: DriveConfig | None = None) -> EngineResult:
@@ -87,7 +112,17 @@ class AssistantState:
         return self.session.with_profile(self.selected_profile_name).with_output(self.output_docx).generate(
             initials_by_author=request.initials_by_author,
             drive_config=drive_config,
+            write_performance_report=request.write_performance_report,
         )
+
+    def workload_prediction(self) -> TimingPrediction:
+        history = load_timing_history()
+        summary = summarize_workload(self.session.conversation.messages, self.selected_profile)
+        return estimate_timing(summary, self.selected_profile, history=history)
+
+    def timeout_seconds(self) -> float:
+        prediction = self.workload_prediction()
+        return prediction.timeout_seconds(self.timeout_mode, self.timeout_multiplier, self.timeout_fixed_seconds)
 
 
 def participant_defaults(suggestions: list[ParticipantSuggestion]) -> list[ParticipantDraft]:

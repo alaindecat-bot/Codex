@@ -51,8 +51,10 @@ def run_document_session(
     session: DocumentSession,
     initials_by_author: dict[str, str] | None = None,
     drive_config: DriveConfig | None = None,
+    write_performance_report: bool = True,
 ) -> EngineResult:
     return session.generate(
         initials_by_author=initials_by_author,
         drive_config=drive_config,
+        write_performance_report=write_performance_report,
     )

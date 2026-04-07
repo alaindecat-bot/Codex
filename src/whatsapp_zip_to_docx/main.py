@@ -54,6 +54,11 @@ def main() -> int:
         action="store_true",
         help="Upload video attachments to Google Drive and use clickable thumbnails in the generated docx.",
     )
+    parser.add_argument(
+        "--no-performance-report",
+        action="store_true",
+        help="Do not write performance JSON/TXT/SVG files next to the generated docx.",
+    )
     args = parser.parse_args()
 
     drive_config = DriveConfig(
@@ -92,7 +97,7 @@ def main() -> int:
         )
 
     if args.inspect_urls:
-        url_infos = inspect_message_urls(prepared.messages)
+        url_infos = inspect_message_urls(prepared.messages, drive_config=drive_config)
         summarize_urls(url_infos)
 
     result = generate_document(
@@ -101,6 +106,7 @@ def main() -> int:
             output_docx=output_docx,
             initials_by_author=initials_by_author,
             profile=profile,
+            write_performance_report=not args.no_performance_report,
         ),
         drive_config=drive_config,
     )
@@ -108,6 +114,14 @@ def main() -> int:
     for warning in result.warnings:
         print(f"Warning [{warning.code}]: {warning.message}")
 
+    for line in result.logs:
+        print(line)
+    if result.performance_summary_path is not None:
+        print(f"Performance summary: {result.performance_summary_path}")
+    if result.performance_report_path is not None:
+        print(f"Performance report: {result.performance_report_path}")
+    if result.performance_svg_path is not None:
+        print(f"Performance dashboard: {result.performance_svg_path}")
     print(f"Wrote {result.output_docx}")
     return 0
 

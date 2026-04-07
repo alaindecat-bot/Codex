@@ -64,6 +64,7 @@ class DocumentSession:
     def build_request(
         self,
         initials_by_author: dict[str, str] | None = None,
+        write_performance_report: bool = True,
     ) -> EngineRequest:
         resolved_initials = initials_by_author or {
             suggestion.author_name: suggestion.suggested_initial
@@ -74,14 +75,19 @@ class DocumentSession:
             output_docx=self.suggested_output_docx,
             initials_by_author=resolved_initials,
             profile=self.selected_profile,
+            write_performance_report=write_performance_report,
         )
 
     def generate(
         self,
         initials_by_author: dict[str, str] | None = None,
         drive_config: DriveConfig | None = None,
+        write_performance_report: bool = True,
     ) -> EngineResult:
-        request = self.build_request(initials_by_author=initials_by_author)
+        request = self.build_request(
+            initials_by_author=initials_by_author,
+            write_performance_report=write_performance_report,
+        )
         return generate_document(request, drive_config=drive_config)
 
 

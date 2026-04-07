@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+from time import perf_counter
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -17,6 +18,7 @@ from docx.shared import Cm, Inches, Pt, RGBColor
 
 from .audio_transcription import AudioTranscript, is_supported_audio
 from .parser import Message
+from .perf import PerformanceRecorder
 from .reply_analysis import ReplyCandidate
 from .url_tools import UrlInfo, download_og_image
 
@@ -64,6 +66,7 @@ def write_docx(
     column_count: int = 1,
     spotify_poem_columns: int = 1,
     spotify_poem_font_size_pt: float | None = None,
+    profiler: PerformanceRecorder | None = None,
 ) -> None:
     document = Document()
     _configure_document_styles(document, body_font_size_pt=body_font_size_pt)
@@ -161,6 +164,7 @@ def write_docx(
                     reply_candidate=reply_candidate,
                     spotify_poem_columns=spotify_poem_columns,
                     spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+                    profiler=profiler,
                 )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,7 +210,8 @@ def _append_url_metadata(
 
     if info.kind == "meeting":
         _add_url_block_heading(document, info.source_label, hyperlink=info.final_url or info.original_url)
-        _add_url_detail_line(document, "Lien de reunion")
+        if info.error:
+            _add_url_detail_line(document, f"Erreur d'acces: {info.error}")
         return True
 
     if info.kind == "spotify":
@@ -235,6 +240,59 @@ def _append_url_metadata(
                 font_size_pt=spotify_poem_font_size_pt,
             )
         return True
+
+    if info.kind == "youtube":
+        title = info.youtube_title
+        if title:
+            _add_url_title_line(document, title, hyperlink=info.final_url or info.original_url)
+        else:
+            _add_url_block_heading(document, info.source_label, hyperlink=info.final_url or info.original_url)
+        details = []
+        if info.youtube_creator:
+            details.append(f"Chaine (YouTube): {info.youtube_creator}")
+        if not title and not info.youtube_creator:
+            details.append("This video isn't available any more")
+        if info.og_image and info.image_fetchable is False:
+            details.append("Image recuperable: non")
+        for line in details:
+            _add_url_detail_line(document, line)
+        return bool(title or details)
+
+    if info.kind == "dubb":
+        title = info.dubb_title
+        if title:
+            _add_url_title_line(document, title, hyperlink=info.final_url or info.original_url)
+        else:
+            _add_url_block_heading(document, info.source_label, hyperlink=info.final_url or info.original_url)
+        details = []
+        if not title and info.dubb_creator:
+            details.append(f"Source (Dubb): {info.dubb_creator}")
+        elif not title:
+            details.append("It's a Dubb video link")
+        if info.og_image and info.image_fetchable is False:
+            details.append("Image recuperable: non")
+        for line in details:
+            _add_url_detail_line(document, line)
+        return bool(title or details)
+
+    if info.kind in {"dropbox", "google_drive", "icloud"}:
+        title = info.shared_title
+        if title:
+            _add_url_title_line(document, title, hyperlink=info.final_url or info.original_url)
+        else:
+            _add_url_block_heading(document, info.source_label, hyperlink=info.final_url or info.original_url)
+        details = []
+        if info.shared_type_label:
+            details.append(info.shared_type_label)
+        if info.shared_by:
+            details.append(f"Partage par: {info.shared_by}")
+        if info.error:
+            details.append(f"Erreur d'acces: {info.error}")
+        if info.og_image and info.image_fetchable is False:
+            details.append("Image recuperable: non")
+        for line in details:
+            _add_url_detail_line(document, line)
+        return bool(title or details)
 
     if info.kind == "facebook":
         _add_url_block_heading(document, "Facebook", hyperlink=info.final_url)
@@ -283,6 +341,7 @@ def _write_message_body(
     reply_candidate: ReplyCandidate | None = None,
     spotify_poem_columns: int = 1,
     spotify_poem_font_size_pt: float | None = None,
+    profiler: PerformanceRecorder | None = None,
 ) -> None:
     lines = body.splitlines() or [body]
     if _is_poem(body):
@@ -295,6 +354,7 @@ def _write_message_body(
     for line in lines:
         stripped = line.strip()
         line_urls = INLINE_URL_RE.findall(line)
+        inline_text = _strip_redundant_inline_urls(line, line_urls, url_infos)
         if not wrote_header:
             if reply_candidate is not None:
                 header_paragraph = _add_plain_paragraph(document, header.rstrip())
@@ -310,7 +370,8 @@ def _write_message_body(
                     wrote_header = True
                 else:
                     _add_plain_paragraph(document, header.rstrip())
-                    _add_text_with_hyperlinks(document, line)
+                    if inline_text.strip():
+                        _add_text_with_hyperlinks(document, inline_text)
                     wrote_header = True
             else:
                 _add_plain_paragraph(document, f"{header}{line}")
@@ -327,6 +388,7 @@ def _write_message_body(
                     spotify_mode=spotify_mode,
                     spotify_poem_columns=spotify_poem_columns,
                     spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+                    profiler=profiler,
                 ) or appended_metadata
             else:
                 for url in line_urls:
@@ -339,6 +401,7 @@ def _write_message_body(
                         spotify_poem_columns=spotify_poem_columns,
                         spotify_poem_font_size_pt=spotify_poem_font_size_pt,
                         render_fallback_quote=False,
+                        profiler=profiler,
                     ) or appended_metadata
         elif stripped:
             _add_plain_paragraph(document, line)
@@ -350,6 +413,46 @@ def _write_message_body(
 
     if appended_metadata and not next_is_new_day:
         document.add_paragraph("")
+
+
+def _strip_redundant_inline_urls(line: str, line_urls: list[str], url_infos: dict[str, UrlInfo]) -> str:
+    if not line_urls:
+        return line
+    parts: list[str] = []
+    last_end = 0
+    changed = False
+    for match in INLINE_URL_RE.finditer(line):
+        url = match.group(0)
+        parts.append(line[last_end:match.start()])
+        if _should_replace_inline_url(url, url_infos.get(url)):
+            changed = True
+        else:
+            parts.append(url)
+        last_end = match.end()
+    parts.append(line[last_end:])
+    if not changed:
+        return line
+    return _normalize_inline_text_after_url_removal("".join(parts))
+
+
+def _should_replace_inline_url(url: str, info: UrlInfo | None) -> bool:
+    if info is None:
+        return False
+    if info.kind == "meeting":
+        return True
+    if info.kind == "youtube":
+        return bool(info.youtube_title or info.youtube_creator or info.og_image)
+    if info.kind == "dubb":
+        return bool(info.dubb_title or info.dubb_creator or info.og_image)
+    if info.kind in {"dropbox", "google_drive", "icloud"}:
+        return bool(info.shared_title or info.shared_type_label or info.og_image)
+    return False
+
+
+def _normalize_inline_text_after_url_removal(text: str) -> str:
+    compacted = re.sub(r"[ \t]{2,}", " ", text)
+    compacted = re.sub(r" +([,.;:!?])", r"\1", compacted)
+    return compacted.strip()
 
 
 def _configure_document_styles(document: Document, body_font_size_pt: float = 10.5) -> None:
@@ -615,12 +718,77 @@ def _append_web_preview(
     hyperlink: str | None = None,
     blue_border: bool = False,
 ) -> None:
-    preview_path = download_og_image(info, preview_dir / _safe_preview_dirname(info))
-    if preview_path is None:
-        return
-    prepared = _prepare_image_for_render(preview_path, workspace=preview_dir)
-    height_cm = 11 if info.kind == "facebook" and _is_portrait_image(prepared) else 7
-    _add_centered_picture(document, prepared, hyperlink=hyperlink, blue_border=blue_border, height_cm=height_cm)
+    _append_web_preview_with_profile(
+        document,
+        info,
+        preview_dir,
+        hyperlink=hyperlink,
+        blue_border=blue_border,
+        profiler=None,
+    )
+
+
+def _append_web_preview_with_profile(
+    document: Document,
+    info: UrlInfo,
+    preview_dir: Path,
+    hyperlink: str | None = None,
+    blue_border: bool = False,
+    profiler: PerformanceRecorder | None = None,
+) -> None:
+    started = None
+    if profiler is not None:
+        started = perf_counter()
+    rendered = False
+    preview_path = download_og_image(info, preview_dir / _safe_preview_dirname(info), timeout=6.0)
+    if preview_path is not None:
+        prepared = _prepare_image_for_render(preview_path, workspace=preview_dir)
+        height_cm = 11 if info.kind == "facebook" and _is_portrait_image(prepared) else 7
+        rendered = _add_centered_picture(
+            document,
+            prepared,
+            hyperlink=hyperlink,
+            blue_border=blue_border,
+            height_cm=height_cm,
+        )
+    if profiler is not None and started is not None:
+        profiler.record(
+            "preview",
+            "preview.web_image",
+            perf_counter() - started,
+            url=info.final_url or info.original_url,
+            kind=info.kind,
+            domain=info.domain,
+            ok=rendered,
+        )
+
+
+def _append_remote_video_preview(
+    document: Document,
+    info: UrlInfo,
+    preview_dir: Path,
+    hyperlink: str | None = None,
+    blue_border: bool = False,
+    profiler: PerformanceRecorder | None = None,
+) -> bool:
+    started = None
+    if profiler is not None:
+        started = perf_counter()
+    preview = _render_remote_video_preview(info, preview_dir)
+    rendered = False
+    if preview is not None:
+        rendered = _add_centered_picture(document, preview, hyperlink=hyperlink, blue_border=blue_border, height_cm=7)
+    if profiler is not None and started is not None:
+        profiler.record(
+            "preview",
+            "preview.remote_video",
+            perf_counter() - started,
+            url=info.final_url or info.original_url,
+            kind=info.kind,
+            domain=info.domain,
+            ok=rendered,
+        )
+    return rendered
 
 
 def _attachment_height_cm(attachment_path: Path) -> int:
@@ -638,6 +806,7 @@ def _render_url(
     spotify_poem_columns: int = 1,
     spotify_poem_font_size_pt: float | None = None,
     render_fallback_quote: bool = True,
+    profiler: PerformanceRecorder | None = None,
 ) -> bool:
     info = url_infos.get(url)
     if info is None:
@@ -662,7 +831,80 @@ def _render_url(
             spotify_poem_columns=spotify_poem_columns,
             spotify_poem_font_size_pt=spotify_poem_font_size_pt,
         )
-        _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
+        _append_web_preview_with_profile(
+            document,
+            info,
+            preview_dir,
+            hyperlink=info.final_url,
+            blue_border=True,
+            profiler=profiler,
+        )
+        return rendered or bool(info.og_image)
+
+    if info.kind == "youtube":
+        rendered = _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
+        if info.og_image:
+            _append_web_preview_with_profile(
+                document,
+                info,
+                preview_dir,
+                hyperlink=info.final_url,
+                blue_border=True,
+                profiler=profiler,
+            )
+        return rendered or bool(info.og_image)
+
+    if info.kind == "dubb":
+        rendered = _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
+        if info.og_image:
+            _append_web_preview_with_profile(
+                document,
+                info,
+                preview_dir,
+                hyperlink=info.final_url,
+                blue_border=True,
+                profiler=profiler,
+            )
+        return rendered or bool(info.og_image)
+
+    if info.kind in {"dropbox", "google_drive", "icloud"}:
+        rendered = _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
+        if info.og_image:
+            _append_web_preview_with_profile(
+                document,
+                info,
+                preview_dir,
+                hyperlink=info.final_url,
+                blue_border=True,
+                profiler=profiler,
+            )
+        elif info.shared_video_source_url:
+            _append_remote_video_preview(
+                document,
+                info,
+                preview_dir,
+                hyperlink=info.final_url,
+                blue_border=True,
+                profiler=profiler,
+            )
         return rendered or bool(info.og_image)
 
     if info.kind == "meeting":
@@ -682,7 +924,14 @@ def _render_url(
             spotify_poem_columns=spotify_poem_columns,
             spotify_poem_font_size_pt=spotify_poem_font_size_pt,
         )
-        _append_web_preview(document, info, preview_dir, hyperlink=info.final_url, blue_border=True)
+        _append_web_preview_with_profile(
+            document,
+            info,
+            preview_dir,
+            hyperlink=info.final_url,
+            blue_border=True,
+            profiler=profiler,
+        )
         return rendered or True
 
     if info.kind == "webpage":
@@ -830,6 +1079,38 @@ def _render_video_preview(video_path: Path, workspace: Path) -> Path | None:
     return _prepare_image_for_render(preview, workspace=workspace)
 
 
+def _render_remote_video_preview(info: UrlInfo, workspace: Path) -> Path | None:
+    source_url = info.shared_video_source_url
+    if not source_url:
+        return None
+    output_dir = workspace / f"remote_video_{_safe_preview_dirname(info)}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = output_dir / "preview.png"
+    try:
+        subprocess.run(
+            [
+                "/opt/homebrew/bin/ffmpeg",
+                "-y",
+                "-ss",
+                "1",
+                "-i",
+                source_url,
+                "-frames:v",
+                "1",
+                str(preview_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    if not preview_path.exists():
+        return None
+    return _prepare_image_for_render(preview_path, workspace=workspace)
+
+
 def _read_video_duration_label(video_path: Path) -> str | None:
     try:
         result = subprocess.run(
@@ -908,7 +1189,7 @@ def _read_image_orientation(image_path: Path) -> int | None:
 
 
 def _ensure_docx_compatible_image(image_path: Path, workspace: Path) -> Path:
-    if image_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".bmp"}:
+    if image_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}:
         return image_path
     converted_path = workspace / f"{image_path.stem}.png"
     try:

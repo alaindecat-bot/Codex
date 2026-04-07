@@ -13,6 +13,7 @@ class EngineRequest:
     output_docx: Path
     initials_by_author: dict[str, str]
     profile: UserProfile
+    write_performance_report: bool = True
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,9 @@ class EngineResult:
     output_docx: Path
     warnings: list[EngineWarning] = field(default_factory=list)
     logs: list[str] = field(default_factory=list)
+    performance_report_path: Path | None = None
+    performance_summary_path: Path | None = None
+    performance_svg_path: Path | None = None
 
 
 class DocumentEngine(Protocol):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import time
 from typing import Optional
 
@@ -14,6 +15,11 @@ from googleapiclient.http import MediaFileUpload
 
 
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+DRIVE_SCOPES = [DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE]
+GOOGLE_FILE_ID_RE = re.compile(
+    r"/d/(?P<file_id>[-_a-zA-Z0-9]+)|[?&]id=(?P<query_id>[-_a-zA-Z0-9]+)"
+)
 
 
 @dataclass
@@ -93,20 +99,49 @@ def ensure_folder(service, folder_name: str) -> str:
     return created["id"]
 
 
+def shared_file_metadata_from_url(url: str, config: DriveConfig, service=None) -> Optional[dict[str, object]]:
+    file_id = _extract_google_file_id(url)
+    if not file_id:
+        return None
+    drive_service = service or ensure_drive_service(config)
+    try:
+        payload = (
+            drive_service.files()
+            .get(
+                fileId=file_id,
+                fields="id,name,mimeType,thumbnailLink,webViewLink,owners(displayName)",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+    except HttpError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _extract_google_file_id(url: str) -> Optional[str]:
+    match = GOOGLE_FILE_ID_RE.search(url)
+    if not match:
+        return None
+    return match.group("file_id") or match.group("query_id")
+
+
 def _load_credentials(config: DriveConfig) -> Credentials:
     credentials = None
     if config.token_path.exists():
-        credentials = Credentials.from_authorized_user_file(str(config.token_path), [DRIVE_FILE_SCOPE])
+        credentials = Credentials.from_authorized_user_file(str(config.token_path), DRIVE_SCOPES)
 
-    if credentials and credentials.valid:
+    if credentials and credentials.valid and credentials.has_scopes(DRIVE_SCOPES):
         return credentials
 
-    if credentials and credentials.expired and credentials.refresh_token:
+    if credentials and credentials.expired and credentials.refresh_token and credentials.has_scopes(DRIVE_SCOPES):
         credentials.refresh(Request())
         config.token_path.write_text(credentials.to_json(), encoding="utf-8")
         return credentials
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(config.credentials_path), [DRIVE_FILE_SCOPE])
+    flow = InstalledAppFlow.from_client_secrets_file(str(config.credentials_path), DRIVE_SCOPES)
     credentials = flow.run_local_server(port=0)
     config.token_path.parent.mkdir(parents=True, exist_ok=True)
     config.token_path.write_text(credentials.to_json(), encoding="utf-8")

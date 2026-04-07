@@ -9,8 +9,10 @@ import re
 import subprocess
 from typing import Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, unquote, parse_qsl
 from urllib.request import Request, urlopen
+
+from .google_drive import DriveConfig, shared_file_metadata_from_url
 
 TITLE_RE = re.compile(r"<title>(?P<title>.*?)</title>", re.IGNORECASE | re.DOTALL)
 LOW_INFORMATION_DOMAINS = (
@@ -18,10 +20,52 @@ LOW_INFORMATION_DOMAINS = (
     "teams.live.com",
     "zoom.us",
     "meet.google.com",
+    "webex.com",
+    "calendly.com",
+    "cal.com",
+    "whereby.com",
+    "doodle.com",
+    "meet.jit.si",
 )
+LOW_INFORMATION_TITLE_SUFFIX_RE = re.compile(
+    r"\s*(?:[-|:]\s*)?(Teams|Zoom|Google Meet|Webex|Calendly|Cal\.com|Whereby|Doodle)\s*$",
+    re.IGNORECASE,
+)
+GENERIC_LOW_INFORMATION_TITLES = {
+    "join microsoft teams meeting",
+    "microsoft teams meeting",
+    "join zoom meeting",
+    "zoom meeting",
+    "google meet",
+    "join the meeting now",
+    "webex meeting",
+}
 LRCLIB_API_URL = "https://lrclib.net/api/search"
+YOUTUBE_OEMBED_API_URL = "https://www.youtube.com/oembed"
 LYRIC_TIMESTAMP_RE = re.compile(r"^\[[0-9:.]+\]\s*")
 _LYRICS_CACHE: dict[tuple[str, str], Optional[str]] = {}
+VIDEO_FROM_RE = re.compile(r"^Video from (?P<creator>.+)$", re.IGNORECASE)
+SHARED_BY_RE = re.compile(r"^Shared by (?P<name>.+)$", re.IGNORECASE)
+VIDEO_FILE_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
+DOCUMENT_FILE_SUFFIXES = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".csv",
+    ".rtf",
+    ".odt",
+    ".ods",
+    ".odp",
+    ".numbers",
+    ".pages",
+    ".key",
+}
+GENERIC_SHARED_TITLES = {"dropbox", "google docs", "google drive", "google forms", "icloud"}
 
 
 @dataclass
@@ -48,9 +92,25 @@ class UrlInfo:
         content_type = (self.content_type or "").lower()
         if "spotify.com" in domain:
             return "spotify"
+        if _is_youtube_domain(domain):
+            return "youtube"
+        if _is_dubb_domain(domain):
+            return "dubb"
+        if _is_google_workspace_domain(domain):
+            return "google_drive"
+        if _is_dropbox_domain(domain):
+            return "dropbox"
+        if _is_icloud_domain(domain):
+            return "icloud"
         if "facebook.com" in domain or "fb.watch" in domain:
             return "facebook"
-        if any(host in domain for host in LOW_INFORMATION_DOMAINS):
+        if _is_low_information_link(
+            domain,
+            self.final_url or self.original_url,
+            self.og_title,
+            self.page_title,
+            self.og_site_name,
+        ):
             return "meeting"
         if content_type.startswith("image/"):
             return "image"
@@ -64,6 +124,32 @@ class UrlInfo:
 
     @property
     def source_label(self) -> str:
+        if self.kind == "youtube":
+            return "YouTube"
+        if self.kind == "dubb":
+            return "Dubb"
+        if self.kind == "dropbox":
+            return "Dropbox"
+        if self.kind == "google_drive":
+            resource_type = self.shared_resource_type
+            if resource_type == "document":
+                return "Google Docs"
+            if resource_type == "form":
+                return "Google Forms"
+            if resource_type == "sheet":
+                return "Google Sheets"
+            if resource_type == "slides":
+                return "Google Slides"
+            return "Google Drive"
+        if self.kind == "icloud":
+            resource_type = self.shared_resource_type
+            if resource_type == "numbers":
+                return "iCloud Numbers"
+            if resource_type == "pages":
+                return "iCloud Pages"
+            if resource_type == "keynote":
+                return "iCloud Keynote"
+            return "iCloud"
         if self.og_site_name:
             return self.og_site_name
         if self.kind == "meeting":
@@ -74,13 +160,78 @@ class UrlInfo:
                 return "Zoom"
             if "meet.google" in domain:
                 return "Google Meet"
+            if "webex" in domain:
+                return "Webex"
+            if "calendly" in domain:
+                return "Calendly"
+            if domain == "cal.com" or domain.endswith(".cal.com"):
+                return "Cal.com"
+            if "whereby" in domain:
+                return "Whereby"
+            if "doodle" in domain:
+                return "Doodle"
+            if "jit.si" in domain:
+                return "Jitsi"
         return _humanize_domain(self.domain)
+
+    @property
+    def low_information_title(self) -> Optional[str]:
+        if self.kind != "meeting":
+            return None
+        for candidate in (self.og_title, self.page_title):
+            cleaned = _clean_low_information_title(candidate)
+            if cleaned:
+                return cleaned
+        return None
 
     @property
     def lyrics_searchable(self) -> Optional[bool]:
         if self.kind != "spotify":
             return None
         return bool(self.spotify_lyrics)
+
+    @property
+    def youtube_title(self) -> Optional[str]:
+        if self.kind != "youtube":
+            return None
+        title = (self.og_title or self.page_title or "").strip()
+        return title or None
+
+    @property
+    def youtube_creator(self) -> Optional[str]:
+        if self.kind != "youtube":
+            return None
+        return self.author
+
+    @property
+    def youtube_resource_type(self) -> Optional[str]:
+        if self.kind != "youtube":
+            return None
+        path = urlparse(self.final_url or self.original_url).path.strip("/").lower()
+        if path.startswith("shorts/"):
+            return "short"
+        if path == "watch" or path == "embed":
+            return "video"
+        if path.startswith("@") or path.startswith("channel/") or path.startswith("user/") or path.startswith("c/"):
+            return "channel"
+        if path == "playlist":
+            return "playlist"
+        if "/playlist" in path:
+            return "playlist"
+        return "video"
+
+    @property
+    def youtube_label(self) -> Optional[str]:
+        if self.kind != "youtube":
+            return None
+        resource_type = self.youtube_resource_type
+        if resource_type == "short":
+            return "Short YouTube"
+        if resource_type == "channel":
+            return "Chaine YouTube"
+        if resource_type == "playlist":
+            return "Playlist YouTube"
+        return "Video YouTube"
 
     @property
     def spotify_title(self) -> Optional[str]:
@@ -92,6 +243,158 @@ class UrlInfo:
         if title.endswith(" | Spotify"):
             title = title.removesuffix(" | Spotify")
         return title.strip() or None
+
+    @property
+    def dubb_title(self) -> Optional[str]:
+        if self.kind != "dubb":
+            return None
+        title = (self.og_title or self.page_title or "").strip()
+        return title or None
+
+    @property
+    def dubb_creator(self) -> Optional[str]:
+        if self.kind != "dubb":
+            return None
+        if self.author:
+            return self.author
+        description = (self.og_description or "").strip()
+        match = VIDEO_FROM_RE.match(description)
+        if match:
+            return match.group("creator").strip() or None
+        return None
+
+    @property
+    def shared_title(self) -> Optional[str]:
+        if self.kind == "dropbox":
+            title = _clean_generic_shared_title(self.og_title or self.page_title)
+            if title:
+                return title
+            return _title_from_url_filename(self.final_url or self.original_url)
+        if self.kind == "google_drive":
+            title = _clean_generic_shared_title(self.og_title or self.page_title)
+            if title:
+                for suffix in (
+                    " - Google Docs",
+                    " - Google Forms",
+                    " - Google Sheets",
+                    " - Google Slides",
+                    " - Google Drive",
+                ):
+                    if title.endswith(suffix):
+                        title = title.removesuffix(suffix).strip()
+                return title or None
+            return None
+        if self.kind == "icloud":
+            title = _clean_generic_shared_title(self.og_title or self.page_title)
+            return title or _title_from_url_fragment(self.final_url or self.original_url)
+        return None
+
+    @property
+    def shared_resource_type(self) -> Optional[str]:
+        url = self.final_url or self.original_url
+        parsed = urlparse(url)
+        path = parsed.path.strip("/").lower()
+        host = self.domain.lower()
+        suffix = _path_suffix_from_url(url)
+        og_type = (self.og_type or "").lower()
+        if self.kind == "dropbox":
+            if "video" in og_type:
+                return "video"
+            if suffix in VIDEO_FILE_SUFFIXES:
+                return "video"
+            if suffix in DOCUMENT_FILE_SUFFIXES:
+                return "document"
+            return "file"
+        if self.kind == "google_drive":
+            if "video" in og_type:
+                return "video"
+            if host == "docs.google.com":
+                if path.startswith("document/"):
+                    return "document"
+                if path.startswith("forms/"):
+                    return "form"
+                if path.startswith("spreadsheets/"):
+                    return "sheet"
+                if path.startswith("presentation/"):
+                    return "slides"
+            if suffix in VIDEO_FILE_SUFFIXES:
+                return "video"
+            if path.startswith("file/") or "/file/" in path:
+                return "file"
+            if "folders/" in path:
+                return "folder"
+            return "file"
+        if self.kind == "icloud":
+            if "video" in og_type:
+                return "video"
+            if path.startswith("numbers/"):
+                return "numbers"
+            if path.startswith("pages/"):
+                return "pages"
+            if path.startswith("keynote/"):
+                return "keynote"
+            if suffix in VIDEO_FILE_SUFFIXES:
+                return "video"
+            return "file"
+        return None
+
+    @property
+    def shared_type_label(self) -> Optional[str]:
+        resource_type = self.shared_resource_type
+        if self.kind == "dropbox":
+            if resource_type == "video":
+                return "Video partagee (Dropbox)"
+            if resource_type == "document":
+                return "Document partage (Dropbox)"
+            return "Fichier partage (Dropbox)"
+        if self.kind == "google_drive":
+            if resource_type == "document":
+                return "Document partage (Google Docs)"
+            if resource_type == "form":
+                return "Formulaire partage (Google Forms)"
+            if resource_type == "sheet":
+                return "Tableur partage (Google Sheets)"
+            if resource_type == "slides":
+                return "Presentation partagee (Google Slides)"
+            if resource_type == "folder":
+                return "Dossier partage (Google Drive)"
+            if resource_type == "video":
+                return "Video partagee (Google Drive)"
+            return "Fichier partage (Google Drive)"
+        if self.kind == "icloud":
+            if resource_type == "numbers":
+                return "Document partage (iCloud Numbers)"
+            if resource_type == "pages":
+                return "Document partage (iCloud Pages)"
+            if resource_type == "keynote":
+                return "Presentation partagee (iCloud Keynote)"
+            if resource_type == "video":
+                return "Video partagee (iCloud)"
+            return "Fichier partage (iCloud)"
+        return None
+
+    @property
+    def shared_by(self) -> Optional[str]:
+        if self.kind not in {"google_drive", "icloud"}:
+            return None
+        description = (self.og_description or "").strip()
+        match = SHARED_BY_RE.match(description)
+        if match:
+            return match.group("name").strip() or None
+        return None
+
+    @property
+    def shared_video_source_url(self) -> Optional[str]:
+        if self.shared_resource_type != "video":
+            return None
+        url = self.final_url or self.original_url
+        if self.kind == "dropbox":
+            parsed = urlparse(url)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            query.pop("dl", None)
+            query["raw"] = "1"
+            return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", urlencode(query), ""))
+        return None
 
     @property
     def spotify_resource_type(self) -> Optional[str]:
@@ -209,6 +512,10 @@ class UrlInfo:
 
 
 def inspect_url(url: str, timeout: float = 10.0) -> UrlInfo:
+    return inspect_url_with_google(url, timeout=timeout, drive_config=None)
+
+
+def inspect_url_with_google(url: str, timeout: float = 10.0, drive_config: DriveConfig | None = None) -> UrlInfo:
     normalized_url = _normalize_url(url)
     request = Request(normalized_url, headers=_request_headers())
     try:
@@ -236,6 +543,8 @@ def inspect_url(url: str, timeout: float = 10.0) -> UrlInfo:
                     _populate_html_metadata(info, fallback_html)
                     if info.og_image and info.image_fetchable is None:
                         info.image_fetchable = _is_fetchable_image(info.og_image, timeout=timeout)
+            _populate_google_drive_metadata(info, drive_config=drive_config, timeout=timeout)
+            _populate_youtube_metadata(info, timeout=timeout)
             _populate_spotify_metadata(info, timeout=timeout)
             return info
     except HTTPError as exc:
@@ -254,6 +563,8 @@ def inspect_url(url: str, timeout: float = 10.0) -> UrlInfo:
                 _populate_html_metadata(info, fallback_html)
                 if info.og_image:
                     info.image_fetchable = _is_fetchable_image(info.og_image, timeout=timeout)
+        _populate_google_drive_metadata(info, drive_config=drive_config, timeout=timeout)
+        _populate_youtube_metadata(info, timeout=timeout)
         _populate_spotify_metadata(info, timeout=timeout)
         return info
     except URLError as exc:
@@ -276,10 +587,15 @@ def _populate_html_metadata(info: UrlInfo, html: str) -> None:
     if title_match:
         info.page_title = _clean_html_text(title_match.group("title"))
 
-    info.og_title = meta.get("og:title")
-    info.og_description = meta.get("og:description")
+    info.og_title = meta.get("og:title") or meta.get("twitter:title")
+    info.og_description = meta.get("og:description") or meta.get("twitter:description")
     info.og_type = meta.get("og:type")
-    info.og_image = meta.get("og:image")
+    info.og_image = (
+        meta.get("og:image")
+        or meta.get("og:image:url")
+        or meta.get("og:image:secure_url")
+        or meta.get("twitter:image")
+    )
     info.og_site_name = meta.get("og:site_name") or meta.get("application-name")
     info.author = meta.get("author")
     _populate_json_ld_metadata(info, html)
@@ -297,6 +613,135 @@ def _clean_html_text(value: str) -> str:
     )
 
 
+def _is_youtube_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return (
+        host == "youtube.com"
+        or host.endswith(".youtube.com")
+        or host == "youtu.be"
+    )
+
+
+def _is_dubb_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return host == "dubb.com" or host.endswith(".dubb.com")
+
+
+def _is_google_workspace_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return host == "docs.google.com" or host == "drive.google.com"
+
+
+def _is_dropbox_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return host == "dropbox.com" or host.endswith(".dropbox.com")
+
+
+def _is_icloud_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return host == "icloud.com" or host.endswith(".icloud.com")
+
+
+def _path_suffix_from_url(url: str) -> str:
+    path = urlparse(url).path
+    filename = Path(unquote(path)).name
+    return Path(filename).suffix.lower()
+
+
+def _title_from_url_filename(url: str) -> Optional[str]:
+    path = urlparse(url).path
+    filename = Path(unquote(path)).name
+    if not filename:
+        return None
+    stem = Path(filename).stem
+    if not stem:
+        return None
+    cleaned = stem.replace("_", " ").replace("-", " ").strip()
+    return cleaned or stem
+
+
+def _title_from_url_fragment(url: str) -> Optional[str]:
+    fragment = urlparse(url).fragment.strip()
+    if not fragment:
+        return None
+    cleaned = unquote(fragment).replace("_", " ").strip()
+    return cleaned or None
+
+
+def _clean_generic_shared_title(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned.casefold() in GENERIC_SHARED_TITLES:
+        return None
+    return cleaned
+
+
+def _is_low_information_link(
+    domain: str,
+    url: str,
+    og_title: Optional[str],
+    page_title: Optional[str],
+    og_site_name: Optional[str],
+) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    if any(host == suffix or host.endswith(f".{suffix}") for suffix in LOW_INFORMATION_DOMAINS):
+        return True
+
+    path = urlparse(url).path.lower()
+    if any(token in host for token in ("teams", "zoom", "webex", "whereby")) and any(
+        marker in path for marker in ("/join", "/meet", "/meeting", "/l/meeting", "/room")
+    ):
+        return True
+
+    title_bits = " ".join(part for part in (og_title, page_title, og_site_name) if part)
+    normalized_title = _normalize_match_text(title_bits)
+    if normalized_title in GENERIC_LOW_INFORMATION_TITLES:
+        return True
+    return False
+
+
+def _clean_low_information_title(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    cleaned = LOW_INFORMATION_TITLE_SUFFIX_RE.sub("", value).strip(" -|:")
+    normalized = _normalize_match_text(cleaned)
+    if not normalized or normalized in GENERIC_LOW_INFORMATION_TITLES:
+        return None
+    generic_tokens = {
+        "join",
+        "meeting",
+        "meet",
+        "room",
+        "video",
+        "call",
+        "conference",
+        "microsoft",
+        "teams",
+        "zoom",
+        "google",
+        "webex",
+        "calendly",
+        "cal",
+        "whereby",
+        "doodle",
+        "jitsi",
+        "schedule",
+        "booking",
+        "book",
+        "appointment",
+        "invite",
+        "online",
+        "now",
+    }
+    words = normalized.split()
+    if words and all(word in generic_tokens for word in words):
+        return None
+    return cleaned or None
+
+
 def _is_fetchable_image(url: str, timeout: float = 10.0) -> bool:
     request = Request(url, headers=_request_headers())
     try:
@@ -307,7 +752,7 @@ def _is_fetchable_image(url: str, timeout: float = 10.0) -> bool:
 
 
 def _needs_html_fallback(info: UrlInfo) -> bool:
-    if info.kind not in {"spotify", "facebook", "webpage"}:
+    if info.kind not in {"spotify", "facebook", "webpage", "youtube", "dubb", "dropbox", "google_drive", "icloud"}:
         return False
     return not any([info.og_title, info.og_description, info.og_image])
 
@@ -357,6 +802,131 @@ def _normalize_url(url: str) -> str:
         return f"https://open.spotify.com/track/{track_ids[0]}"
 
     return url
+
+
+def _populate_youtube_metadata(info: UrlInfo, timeout: float = 10.0) -> None:
+    if info.kind != "youtube":
+        return
+    info.og_site_name = info.og_site_name or "YouTube"
+    oembed = _fetch_youtube_oembed(info.final_url or info.original_url, timeout=timeout)
+    if oembed:
+        if not info.og_title:
+            info.og_title = oembed.get("title")
+        if not info.author:
+            info.author = oembed.get("author_name")
+        if not info.og_image:
+            info.og_image = oembed.get("thumbnail_url")
+        if not info.og_type:
+            oembed_type = oembed.get("type")
+            if oembed_type == "video":
+                info.og_type = info.youtube_resource_type or "video"
+            elif isinstance(oembed_type, str) and oembed_type.strip():
+                info.og_type = oembed_type.strip().lower()
+    if info.og_image and info.image_fetchable is None:
+        info.image_fetchable = _is_fetchable_image(info.og_image, timeout=timeout)
+
+
+def _populate_google_drive_metadata(
+    info: UrlInfo,
+    drive_config: DriveConfig | None = None,
+    timeout: float = 10.0,
+) -> None:
+    if info.kind != "google_drive" or drive_config is None:
+        return
+    metadata = shared_file_metadata_from_url(info.final_url or info.original_url, drive_config)
+    if not metadata:
+        return
+    name = metadata.get("name")
+    if isinstance(name, str) and name.strip():
+        info.og_title = name.strip()
+    mime_type = metadata.get("mimeType")
+    if isinstance(mime_type, str) and mime_type.strip():
+        info.og_type = _google_mime_type_to_og_type(mime_type)
+    thumbnail = metadata.get("thumbnailLink")
+    if isinstance(thumbnail, str) and thumbnail.strip():
+        info.og_image = thumbnail.strip()
+    owners = metadata.get("owners")
+    if isinstance(owners, list) and owners:
+        owner = owners[0]
+        if isinstance(owner, dict):
+            display_name = owner.get("displayName")
+            if isinstance(display_name, str) and display_name.strip():
+                info.author = display_name.strip()
+                if not info.og_description:
+                    info.og_description = f"Shared by {info.author}"
+    if info.og_image and info.image_fetchable is None:
+        info.image_fetchable = _is_fetchable_image(info.og_image, timeout=timeout)
+    if info.og_title or info.og_image:
+        info.error = None
+
+
+def _google_mime_type_to_og_type(mime_type: str) -> str:
+    mapping = {
+        "application/vnd.google-apps.document": "document",
+        "application/vnd.google-apps.spreadsheet": "sheet",
+        "application/vnd.google-apps.presentation": "slides",
+        "application/vnd.google-apps.form": "form",
+        "application/vnd.google-apps.folder": "folder",
+    }
+    if mime_type in mapping:
+        return mapping[mime_type]
+    if mime_type.startswith("video/"):
+        return "video.other"
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("audio/"):
+        return "audio"
+    return mime_type
+
+
+def _fetch_youtube_oembed(url: str, timeout: float = 10.0) -> Optional[dict[str, str]]:
+    canonical_url = _youtube_oembed_target_url(url)
+    if canonical_url is None:
+        return None
+    query = urlencode({"url": canonical_url, "format": "json"})
+    request = Request(
+        f"{YOUTUBE_OEMBED_API_URL}?{query}",
+        headers={
+            **_request_headers(),
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except (HTTPError, URLError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _youtube_oembed_target_url(url: str) -> Optional[str]:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.strip("/")
+    query = parse_qs(parsed.query)
+    if host == "youtu.be":
+        video_id = path.split("/", 1)[0]
+        if not video_id:
+            return None
+        return f"https://www.youtube.com/watch?v={video_id}"
+    if host.endswith("youtube.com"):
+        if path == "watch":
+            video_id = query.get("v", [None])[0]
+            if video_id:
+                return f"https://www.youtube.com/watch?v={video_id}"
+        if path.startswith("shorts/"):
+            short_id = path.split("/", 1)[1].split("/", 1)[0]
+            if short_id:
+                return f"https://www.youtube.com/shorts/{short_id}"
+        if path == "playlist":
+            playlist_id = query.get("list", [None])[0]
+            if playlist_id:
+                return f"https://www.youtube.com/playlist?list={playlist_id}"
+        if path.startswith("@") or path.startswith("channel/") or path.startswith("user/") or path.startswith("c/"):
+            return urlunparse((parsed.scheme or "https", "www.youtube.com", f"/{path}", "", "", ""))
+    return None
 
 
 def _strip_trailing_url_punctuation(url: str) -> str:
