@@ -46,6 +46,7 @@ LYRIC_TIMESTAMP_RE = re.compile(r"^\[[0-9:.]+\]\s*")
 _LYRICS_CACHE: dict[tuple[str, str], Optional[str]] = {}
 VIDEO_FROM_RE = re.compile(r"^Video from (?P<creator>.+)$", re.IGNORECASE)
 SHARED_BY_RE = re.compile(r"^Shared by (?P<name>.+)$", re.IGNORECASE)
+SUMMARY_MAX_LENGTH = 220
 VIDEO_FILE_SUFFIXES = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 DOCUMENT_FILE_SUFFIXES = {
     ".pdf",
@@ -102,6 +103,12 @@ class UrlInfo:
             return "dropbox"
         if _is_icloud_domain(domain):
             return "icloud"
+        if _is_linkedin_domain(domain):
+            return "linkedin"
+        if _is_x_domain(domain):
+            return "x"
+        if _is_swr_domain(domain):
+            return "swr"
         if "facebook.com" in domain or "fb.watch" in domain:
             return "facebook"
         if _is_low_information_link(
@@ -150,6 +157,12 @@ class UrlInfo:
             if resource_type == "keynote":
                 return "iCloud Keynote"
             return "iCloud"
+        if self.kind == "linkedin":
+            return "LinkedIn"
+        if self.kind == "x":
+            return "X"
+        if self.kind == "swr":
+            return "SWR"
         if self.og_site_name:
             return self.og_site_name
         if self.kind == "meeting":
@@ -473,7 +486,133 @@ class UrlInfo:
             return None
         if title and title in description and len(description) - len(title) < 20:
             return None
-        return description
+        return _truncate_summary(description)
+
+    @property
+    def linkedin_title(self) -> Optional[str]:
+        if self.kind != "linkedin":
+            return None
+        title = (self.og_title or self.page_title or "").strip()
+        if not title:
+            return None
+        if title.endswith(" | LinkedIn"):
+            title = title.removesuffix(" | LinkedIn").strip()
+        return _truncate_summary(title, max_length=160)
+
+    @property
+    def linkedin_content_label(self) -> Optional[str]:
+        if self.kind != "linkedin":
+            return None
+        path = urlparse(self.final_url or self.original_url).path.lower()
+        if path.startswith("/in/") or path.startswith("/pub/"):
+            return "Profil LinkedIn"
+        if "/posts/" in path:
+            return "Post LinkedIn"
+        og_type = (self.og_type or "").lower()
+        if og_type == "profile":
+            return "Profil LinkedIn"
+        if og_type == "article":
+            return "Post LinkedIn"
+        return "Lien LinkedIn"
+
+    @property
+    def linkedin_source(self) -> Optional[str]:
+        if self.kind != "linkedin":
+            return None
+        if self.author:
+            return self.author
+        title = (self.og_title or self.page_title or "").strip()
+        if " | " in title:
+            parts = [part.strip() for part in title.split(" | ") if part.strip()]
+            if parts:
+                return parts[-1]
+        if " - " in title:
+            return title.split(" - ", 1)[0].strip() or None
+        return None
+
+    @property
+    def linkedin_summary(self) -> Optional[str]:
+        if self.kind != "linkedin":
+            return None
+        description = (self.og_description or "").strip()
+        title = (self.og_title or self.page_title or "").strip()
+        if not description or description == title:
+            return None
+        return _truncate_summary(description)
+
+    @property
+    def x_content_label(self) -> Optional[str]:
+        if self.kind != "x":
+            return None
+        path = urlparse(self.final_url or self.original_url).path.lower()
+        if "/status/" in path:
+            return "Post X"
+        return "Lien X"
+
+    @property
+    def x_source(self) -> Optional[str]:
+        if self.kind != "x":
+            return None
+        if self.author:
+            return self.author
+        path = urlparse(self.final_url or self.original_url).path.strip("/")
+        if not path:
+            return None
+        handle = path.split("/", 1)[0].strip()
+        if not handle:
+            return None
+        return f"@{handle}"
+
+    @property
+    def x_title(self) -> Optional[str]:
+        if self.kind != "x":
+            return None
+        title = (self.og_title or self.page_title or "").strip()
+        if title:
+            return _truncate_summary(title, max_length=160)
+        source = self.x_source
+        if source and self.x_content_label == "Post X":
+            return f"Post X de {source}"
+        return self.x_content_label
+
+    @property
+    def x_summary(self) -> Optional[str]:
+        if self.kind != "x":
+            return None
+        description = (self.og_description or "").strip()
+        if not description:
+            return None
+        return _truncate_summary(description)
+
+    @property
+    def swr_title(self) -> Optional[str]:
+        if self.kind != "swr":
+            return None
+        title = (self.og_title or self.page_title or "").strip()
+        return _truncate_summary(title, max_length=180) if title else None
+
+    @property
+    def swr_content_label(self) -> Optional[str]:
+        if self.kind != "swr":
+            return None
+        og_type = (self.og_type or "").lower()
+        if "video" in og_type:
+            return "Video SWR"
+        if "audio" in og_type:
+            return "Audio SWR"
+        if "article" in og_type:
+            return "Article SWR"
+        return "Page SWR"
+
+    @property
+    def swr_summary(self) -> Optional[str]:
+        if self.kind != "swr":
+            return None
+        description = (self.og_description or "").strip()
+        title = (self.og_title or self.page_title or "").strip()
+        if not description or description == title:
+            return None
+        return _truncate_summary(description)
 
     @property
     def web_source(self) -> Optional[str]:
@@ -497,18 +636,22 @@ class UrlInfo:
             return None
         if title and description == title:
             return None
-        return description
+        return _truncate_summary(description)
 
     @property
     def webpage_content_type(self) -> Optional[str]:
         if self.kind != "webpage":
             return None
         og_type = (self.og_type or "").lower()
+        if "video" in og_type:
+            return "Video"
+        if "audio" in og_type:
+            return "Audio"
         if og_type == "article":
-            return "article"
+            return "Article"
         if og_type:
-            return og_type
-        return "page"
+            return _humanize_machine_label(og_type)
+        return "Page web"
 
 
 def inspect_url(url: str, timeout: float = 10.0) -> UrlInfo:
@@ -642,6 +785,21 @@ def _is_icloud_domain(domain: str) -> bool:
     return host == "icloud.com" or host.endswith(".icloud.com")
 
 
+def _is_linkedin_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return host == "linkedin.com" or host.endswith(".linkedin.com")
+
+
+def _is_x_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return host in {"x.com", "twitter.com"} or host.endswith(".x.com") or host.endswith(".twitter.com")
+
+
+def _is_swr_domain(domain: str) -> bool:
+    host = domain.lower().split(":", 1)[0]
+    return host == "swr.de" or host.endswith(".swr.de")
+
+
 def _path_suffix_from_url(url: str) -> str:
     path = urlparse(url).path
     filename = Path(unquote(path)).name
@@ -677,6 +835,24 @@ def _clean_generic_shared_title(value: Optional[str]) -> Optional[str]:
     if cleaned.casefold() in GENERIC_SHARED_TITLES:
         return None
     return cleaned
+
+
+def _truncate_summary(value: str, max_length: int = SUMMARY_MAX_LENGTH) -> str:
+    compact = re.sub(r"\s+", " ", value).strip()
+    if len(compact) <= max_length:
+        return compact
+    truncated = compact[: max_length - 1].rstrip()
+    if " " in truncated:
+        truncated = truncated.rsplit(" ", 1)[0].rstrip()
+    return f"{truncated}…"
+
+
+def _humanize_machine_label(value: str) -> str:
+    base = value.split(".", 1)[0]
+    base = base.replace("_", " ").replace("-", " ").strip()
+    if not base:
+        return "Page web"
+    return base[:1].upper() + base[1:]
 
 
 def _is_low_information_link(
@@ -752,7 +928,19 @@ def _is_fetchable_image(url: str, timeout: float = 10.0) -> bool:
 
 
 def _needs_html_fallback(info: UrlInfo) -> bool:
-    if info.kind not in {"spotify", "facebook", "webpage", "youtube", "dubb", "dropbox", "google_drive", "icloud"}:
+    if info.kind not in {
+        "spotify",
+        "facebook",
+        "webpage",
+        "youtube",
+        "dubb",
+        "dropbox",
+        "google_drive",
+        "icloud",
+        "linkedin",
+        "x",
+        "swr",
+    }:
         return False
     return not any([info.og_title, info.og_description, info.og_image])
 

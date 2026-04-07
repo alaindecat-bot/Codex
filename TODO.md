@@ -8,7 +8,7 @@
 - fait en première passe : définir le contrat d'entrée/sortie de l'orchestrateur
 - fait en première passe : décrire précisément dans le code le flux glisser-déposer -> assistant -> génération
 - à documenter dans le `README` : le flux produit complet, incluant estimation, timeout et rapports de performance
-- prochaine priorité produit : terminer les derniers cas de liens riches, surtout LinkedIn, X / Twitter, SWR et pages médias similaires
+- prochaine priorité produit : traiter les faux positifs Spotify et les derniers raffinements du mode poème
 
 ## V1 app macOS
 
@@ -31,6 +31,7 @@
 - partiellement fait : afficher un résumé final avec avertissements éventuels
 - fait en première passe : produire une analyse prédiction vs temps réel après génération, arrêt, erreur ou timeout
 - fait en première passe : produire un dashboard SVG de performance quand l'option est active
+- fait en première passe : terminer le traitement des liens riches du corpus Dominique, incluant LinkedIn, X / Twitter et SWR
 - obsolète / remplacé : intégrer le moteur `Codex CLI` derrière l'application
 - fait : le moteur utilisé par l'app est maintenant le moteur Python natif du projet
 

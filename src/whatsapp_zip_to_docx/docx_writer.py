@@ -294,6 +294,67 @@ def _append_url_metadata(
             _add_url_detail_line(document, line)
         return bool(title or details)
 
+    if info.kind == "linkedin":
+        title = info.linkedin_title
+        if title:
+            _add_url_title_line(document, title, hyperlink=info.final_url or info.original_url)
+        else:
+            _add_url_block_heading(document, "LinkedIn", hyperlink=info.final_url or info.original_url)
+        details = []
+        if info.linkedin_content_label:
+            details.append(info.linkedin_content_label)
+        if info.linkedin_source:
+            details.append(f"Source: {info.linkedin_source}")
+        if info.linkedin_summary:
+            details.append(f"Resume: {info.linkedin_summary}")
+        if info.error:
+            details.append(f"Erreur d'acces: {info.error}")
+        if info.og_image and info.image_fetchable is False:
+            details.append("Image recuperable: non")
+        for line in details:
+            _add_url_detail_line(document, line)
+        return bool(title or details)
+
+    if info.kind == "x":
+        title = info.x_title
+        if title:
+            _add_url_title_line(document, title, hyperlink=info.final_url or info.original_url)
+        else:
+            _add_url_block_heading(document, "X", hyperlink=info.final_url or info.original_url)
+        details = []
+        if info.x_content_label and info.x_content_label != title:
+            details.append(info.x_content_label)
+        if info.x_source and (title is None or info.x_source not in title):
+            details.append(f"Source: {info.x_source}")
+        if info.x_summary:
+            details.append(f"Resume: {info.x_summary}")
+        if info.error:
+            details.append(f"Erreur d'acces: {info.error}")
+        if info.og_image and info.image_fetchable is False:
+            details.append("Image recuperable: non")
+        for line in details:
+            _add_url_detail_line(document, line)
+        return bool(title or details)
+
+    if info.kind == "swr":
+        title = info.swr_title
+        if title:
+            _add_url_title_line(document, title, hyperlink=info.final_url or info.original_url)
+        else:
+            _add_url_block_heading(document, "SWR", hyperlink=info.final_url or info.original_url)
+        details = []
+        if info.swr_content_label:
+            details.append(info.swr_content_label)
+        if info.swr_summary:
+            details.append(f"Resume: {info.swr_summary}")
+        if info.error:
+            details.append(f"Erreur d'acces: {info.error}")
+        if info.og_image and info.image_fetchable is False:
+            details.append("Image recuperable: non")
+        for line in details:
+            _add_url_detail_line(document, line)
+        return bool(title or details)
+
     if info.kind == "facebook":
         _add_url_block_heading(document, "Facebook", hyperlink=info.final_url)
         details = []
@@ -446,6 +507,12 @@ def _should_replace_inline_url(url: str, info: UrlInfo | None) -> bool:
         return bool(info.dubb_title or info.dubb_creator or info.og_image)
     if info.kind in {"dropbox", "google_drive", "icloud"}:
         return bool(info.shared_title or info.shared_type_label or info.og_image)
+    if info.kind == "linkedin":
+        return bool(info.linkedin_title or info.linkedin_content_label or info.og_image or info.error)
+    if info.kind == "x":
+        return bool(info.x_title or info.x_content_label or info.og_image or info.error)
+    if info.kind == "swr":
+        return bool(info.swr_title or info.swr_content_label or info.og_image or info.error)
     return False
 
 
@@ -898,6 +965,25 @@ def _render_url(
             )
         elif info.shared_video_source_url:
             _append_remote_video_preview(
+                document,
+                info,
+                preview_dir,
+                hyperlink=info.final_url,
+                blue_border=True,
+                profiler=profiler,
+            )
+        return rendered or bool(info.og_image)
+
+    if info.kind in {"linkedin", "x", "swr"}:
+        rendered = _append_url_metadata(
+            document,
+            info,
+            spotify_mode=spotify_mode,
+            spotify_poem_columns=spotify_poem_columns,
+            spotify_poem_font_size_pt=spotify_poem_font_size_pt,
+        )
+        if info.og_image:
+            _append_web_preview_with_profile(
                 document,
                 info,
                 preview_dir,

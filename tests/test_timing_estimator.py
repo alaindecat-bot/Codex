@@ -24,6 +24,8 @@ class TimingEstimatorTests(unittest.TestCase):
         self.assertEqual(guess_url_kind("https://docs.google.com/document/d/abc/edit"), "google_drive")
         self.assertEqual(guess_url_kind("https://www.dropbox.com/s/x/file.mp4?dl=0"), "dropbox")
         self.assertEqual(guess_url_kind("https://www.icloud.com/numbers/xyz"), "icloud")
+        self.assertEqual(guess_url_kind("https://www.linkedin.com/posts/example"), "linkedin")
+        self.assertEqual(guess_url_kind("https://www.swr.de/example.html"), "swr")
         self.assertEqual(guess_url_kind("https://teams.microsoft.com/l/meetup-join/abc"), "meeting")
 
     def test_estimate_timing_uses_message_and_url_counts(self) -> None:

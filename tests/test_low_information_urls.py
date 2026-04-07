@@ -131,6 +131,73 @@ class LowInformationUrlTests(unittest.TestCase):
         self.assertEqual(info.shared_title, "Concert capture")
         self.assertEqual(info.shared_type_label, "Video partagee (Google Drive)")
 
+    def test_linkedin_summary_is_capped_and_typed(self) -> None:
+        description = " ".join(["How to make AI sound exactly like you forever."] * 12)
+        info = UrlInfo(
+            original_url="https://www.linkedin.com/posts/ruben-hassid_example",
+            final_url="https://www.linkedin.com/posts/ruben-hassid_example",
+            domain="www.linkedin.com",
+            content_type="text/html",
+            status=200,
+            og_title="How to make AI sound exactly like you forever | Ruben Hassid",
+            og_description=description,
+            og_type="article",
+            author="Ruben Hassid",
+        )
+
+        self.assertEqual(info.kind, "linkedin")
+        self.assertEqual(info.source_label, "LinkedIn")
+        self.assertEqual(info.linkedin_content_label, "Post LinkedIn")
+        self.assertEqual(info.linkedin_source, "Ruben Hassid")
+        self.assertLessEqual(len(info.linkedin_summary or ""), 220)
+        self.assertTrue((info.linkedin_summary or "").endswith("…"))
+
+    def test_x_status_gets_human_fallback_title(self) -> None:
+        info = UrlInfo(
+            original_url="https://x.com/Teslalightshows/status/1898012865342136664",
+            final_url="https://x.com/Teslalightshows/status/1898012865342136664",
+            domain="x.com",
+            content_type="text/html",
+            status=200,
+        )
+
+        self.assertEqual(info.kind, "x")
+        self.assertEqual(info.source_label, "X")
+        self.assertEqual(info.x_content_label, "Post X")
+        self.assertEqual(info.x_source, "@Teslalightshows")
+        self.assertEqual(info.x_title, "Post X de @Teslalightshows")
+
+    def test_swr_video_uses_human_video_label(self) -> None:
+        info = UrlInfo(
+            original_url="https://www.swr.de/swrclassic/example.html",
+            final_url="https://www.swr.de/swr-symphonieorchester/example.html",
+            domain="www.swr.de",
+            content_type="text/html",
+            status=200,
+            og_title="Currentzis LAB zu Mahlers Sinfonie Nr. 1",
+            og_description="Mit Teodor Currentzis und Ilya Gaisin.",
+            og_type="video.other",
+            og_site_name="SWR",
+        )
+
+        self.assertEqual(info.kind, "swr")
+        self.assertEqual(info.source_label, "SWR")
+        self.assertEqual(info.swr_title, "Currentzis LAB zu Mahlers Sinfonie Nr. 1")
+        self.assertEqual(info.swr_content_label, "Video SWR")
+
+    def test_generic_webpage_type_labels_are_human(self) -> None:
+        info = UrlInfo(
+            original_url="https://example.com/video",
+            final_url="https://example.com/video",
+            domain="example.com",
+            content_type="text/html",
+            status=200,
+            og_type="video.other",
+        )
+
+        self.assertEqual(info.kind, "webpage")
+        self.assertEqual(info.webpage_content_type, "Video")
+
     def test_calendly_keeps_specific_title(self) -> None:
         info = UrlInfo(
             original_url="https://calendly.com/alain/coffee-chat",
@@ -400,6 +467,44 @@ class LowInformationUrlTests(unittest.TestCase):
         self.assertEqual(
             [paragraph.text for paragraph in document.paragraphs if paragraph.text],
             ["[14:37] D:", "just for the we:", "IMG 7691", "Video partagee (Dropbox)"],
+        )
+
+    def test_inline_swr_url_is_removed_when_metadata_block_is_rendered(self) -> None:
+        url = "https://www.swr.de/swrclassic/example.html"
+        info = UrlInfo(
+            original_url=url,
+            final_url="https://www.swr.de/swr-symphonieorchester/example.html",
+            domain="www.swr.de",
+            content_type="text/html",
+            status=200,
+            og_title="Currentzis LAB zu Mahlers Sinfonie Nr. 1",
+            og_type="video.other",
+            og_site_name="SWR",
+        )
+        message = Message(
+            timestamp=datetime(2020, 2, 11, 20, 0, 0),
+            author="Dominique",
+            body=f"Concert: {url}",
+            urls=[url],
+        )
+        document = Document()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _write_message_body(
+                document,
+                "[20:00] D: ",
+                message.body,
+                {url: info},
+                spotify_mode="poeme",
+                next_is_new_day=False,
+                preview_dir=Path(temp_dir),
+                messages=[message],
+                initials_by_author={"Dominique": "D"},
+            )
+
+        self.assertEqual(
+            [paragraph.text for paragraph in document.paragraphs if paragraph.text],
+            ["[20:00] D:", "Concert:", "Currentzis LAB zu Mahlers Sinfonie Nr. 1", "Video SWR"],
         )
 
 

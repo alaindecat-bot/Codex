@@ -43,11 +43,10 @@ This file should be kept pragmatic and test-oriented.
 
 ## Priority Order For The Next Work
 
-1. Complete remaining rich media URL handling
-2. Spotify false positives and remaining poem refinements
-3. Layout and document polish
-4. Assistant UX remaining steps
-5. Full-link investigation for unresolved cases
+1. Spotify false positives and remaining poem refinements
+2. Layout and document polish
+3. Assistant UX remaining steps
+4. Full-link investigation for unresolved cases
 
 ## Completed In Current Phase
 
@@ -58,6 +57,9 @@ This file should be kept pragmatic and test-oriented.
   - Dropbox shared video preview via static image frame.
   - Google Docs / Drive shared file metadata and preview when accessible.
   - iCloud shared document/file handling.
+  - LinkedIn profile/post rendering with capped summaries.
+  - X / Twitter post fallback rendering.
+  - SWR media-page rendering with human labels such as `Video SWR`.
   - Mixed inline URL cleanup for the handled rich-media services.
 - Assistant UX partials:
   - Performance report yes/no option.
@@ -131,7 +133,7 @@ Status: done.
 
 ## Batch 2: Rich Media URL Handling
 
-Status: in progress. YouTube, Dubb, Dropbox, Google Docs / Drive, and iCloud are implemented; LinkedIn, X / Twitter, and SWR-like media pages remain.
+Status: done for the current Dominique-driven scope.
 
 ### Goals
 
@@ -159,18 +161,19 @@ Status: in progress. YouTube, Dubb, Dropbox, Google Docs / Drive, and iCloud are
 - Done: Explore clickable preview support for Google Docs shared documents.
 - Done: Add Google Drive readonly metadata lookup for accessible Docs / Drive files.
 - Done: Add iCloud shared file/document handling.
-- Shorten oversized LinkedIn summaries.
-- Explore an `X` treatment analogous to Facebook where possible.
+- Done: Shorten oversized LinkedIn summaries.
+- Done: Explore an `X` treatment analogous to Facebook where possible.
+- Done: Add X fallback for posts with weak metadata, e.g. `Post X de @handle`.
 - Done for handled rich-media services: Ensure mixed message + inline URL cases do not duplicate or misplace the raw link when a useful preview exists.
-- Partially done: Review why some pages are classified with technical labels such as `Type: page` or `Type: video.other` and replace them with more human output.
-- Remaining: Review SWR and similar media-rich pages.
+- Done: Review why some pages are classified with technical labels such as `Type: page` or `Type: video.other` and replace them with more human output.
+- Done: Review SWR and similar media-rich pages for the Dominique corpus.
 
 ### Acceptance Criteria
 
 - Done: YouTube entries are more descriptive than generic `Type: page`.
 - Done: Dropbox and Google Drive video links render as shared video/file entries with previews where available.
-- LinkedIn summaries are capped to a useful length.
-- Partially done: No preview should be inserted if it adds no real information.
+- Done: LinkedIn summaries are capped to a useful length.
+- Done for current scope: No preview should be inserted if it adds no real information.
 
 ## Batch 3: Spotify False Positives And Remaining Poem Refinements
 

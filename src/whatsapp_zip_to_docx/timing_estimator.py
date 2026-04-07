@@ -21,6 +21,9 @@ DEFAULT_URL_SECONDS_BY_KIND = {
     "google_drive": 4.15,
     "spotify": 1.32,
     "icloud": 7.55,
+    "linkedin": 1.2,
+    "x": 0.7,
+    "swr": 1.0,
     "meeting": 0.27,
     "dubb": 0.68,
     "unknown": 0.45,
@@ -32,6 +35,9 @@ DEFAULT_PREVIEW_SECONDS_BY_KIND = {
     "google_drive": 0.4,
     "spotify": 0.0,
     "icloud": 1.8,
+    "linkedin": 0.25,
+    "x": 0.1,
+    "swr": 0.3,
     "meeting": 0.0,
     "dubb": 0.4,
     "unknown": 0.1,
@@ -364,6 +370,10 @@ def guess_url_kind(url: str) -> str:
         return "dropbox"
     if host == "icloud.com" or host.endswith(".icloud.com"):
         return "icloud"
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        return "linkedin"
+    if host == "swr.de" or host.endswith(".swr.de"):
+        return "swr"
     if any(
         host == domain or host.endswith(f".{domain}")
         for domain in (
